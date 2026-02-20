@@ -1,0 +1,35 @@
+# Intel Brief Configuration
+# Edit this file to match your environment. No secrets go here.
+
+# Path to your Obsidian vault
+obsidian_vault_path: ~/Documents/ObsidianVault
+# Subfolder inside the vault where briefs will be written
+obsidian_output_folder: Intel Briefs
+
+# How far back to look on first run (subsequent runs use last-run timestamp)
+lookback_hours: 24
+
+slack:
+  channels:
+    - general
+    - data-team
+    - engineering
+    # Add any other channels you want to monitor
+
+confluence:
+  spaces:
+    - DATA
+    - ENG
+    # Space keys (the short identifier, e.g. "DATA" not the full name)
+
+jira:
+  projects:
+    - DATA
+    - ENG
+    # Project keys
+
+gmail:
+  max_results: 50
+
+google_cal:
+  max_results: 20
