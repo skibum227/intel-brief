@@ -21,33 +21,33 @@ def fetch_updates(config: dict, since: datetime) -> list[dict]:
             .execute()
         )
 
+        def handle_message(request_id, response, exception):
+            if exception or not response:
+                return
+            headers = {
+                h["name"]: h["value"]
+                for h in response.get("payload", {}).get("headers", [])
+            }
+            updates.append({
+                "source": "gmail",
+                "subject": headers.get("Subject", "(No subject)"),
+                "from": headers.get("From", ""),
+                "to": headers.get("To", ""),
+                "date": headers.get("Date", ""),
+                "snippet": response.get("snippet", "")[:300],
+            })
+
+        batch = service.new_batch_http_request(callback=handle_message)
         for msg_ref in result.get("messages", []):
-            try:
-                msg = (
-                    service.users()
-                    .messages()
-                    .get(
-                        userId="me",
-                        id=msg_ref["id"],
-                        format="metadata",
-                        metadataHeaders=["Subject", "From", "Date", "To"],
-                    )
-                    .execute()
+            batch.add(
+                service.users().messages().get(
+                    userId="me",
+                    id=msg_ref["id"],
+                    format="metadata",
+                    metadataHeaders=["Subject", "From", "Date", "To"],
                 )
-                headers = {
-                    h["name"]: h["value"]
-                    for h in msg.get("payload", {}).get("headers", [])
-                }
-                updates.append({
-                    "source": "gmail",
-                    "subject": headers.get("Subject", "(No subject)"),
-                    "from": headers.get("From", ""),
-                    "to": headers.get("To", ""),
-                    "date": headers.get("Date", ""),
-                    "snippet": msg.get("snippet", "")[:300],
-                })
-            except Exception:
-                continue
+            )
+        batch.execute()
 
     except Exception as e:
         print(f"[Gmail] Error: {e}")

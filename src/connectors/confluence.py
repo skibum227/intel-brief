@@ -8,7 +8,7 @@ def fetch_updates(config: dict, since: datetime) -> list[dict]:
     confluence = Confluence(
         url=os.environ["ATLASSIAN_BASE_URL"],
         username=os.environ["ATLASSIAN_EMAIL"],
-        password=os.environ["ATLASSIAN_API_TOKEN"],
+        password=os.environ["CONFLUENCE_API_TOKEN"],
         cloud=True,
     )
 

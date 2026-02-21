@@ -30,7 +30,8 @@ Edit `.env` with your credentials (never committed):
 |---|---|
 | `ANTHROPIC_API_KEY` | https://console.anthropic.com |
 | `ATLASSIAN_EMAIL` | Your Atlassian account email |
-| `ATLASSIAN_API_TOKEN` | https://id.atlassian.com/manage-profile/security/api-tokens |
+| `JIRA_API_TOKEN` | https://id.atlassian.com/manage-profile/security/api-tokens (scope to Jira) |
+| `CONFLUENCE_API_TOKEN` | https://id.atlassian.com/manage-profile/security/api-tokens (scope to Confluence) |
 | `ATLASSIAN_BASE_URL` | `https://yourcompany.atlassian.net` |
 | `SLACK_USER_TOKEN` | See Slack setup below |
 
