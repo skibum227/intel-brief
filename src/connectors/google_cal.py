@@ -7,10 +7,15 @@ def fetch_updates(config: dict, since: datetime) -> list[dict]:
     creds = get_google_credentials()
     service = build("calendar", "v3", credentials=creds)
 
-    # Calendar is forward-looking: show events from now through next 24 hours
+    # Calendar is forward-looking: show events from now through end of Friday
     now = datetime.now(timezone.utc)
+    weekday = now.weekday()  # Mon=0 … Fri=4, Sat=5, Sun=6
+    days_to_friday = (4 - weekday) if weekday <= 4 else (4 + 7 - weekday)
+    friday_eod = (now + timedelta(days=days_to_friday)).replace(
+        hour=23, minute=59, second=59, microsecond=0
+    )
     time_min = now.isoformat()
-    time_max = (now + timedelta(hours=24)).isoformat()
+    time_max = friday_eod.isoformat()
     max_results = config.get("google_cal", {}).get("max_results", 20)
     updates = []
 

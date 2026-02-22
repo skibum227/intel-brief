@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from src.connectors import confluence, gmail, google_cal, jira, slack
-from src.obsidian import write_brief
+from src.obsidian import load_recent_summaries, write_brief
 from src.state import get_last_run, save_last_run
 from src.summarizer import summarize
 
@@ -72,7 +72,8 @@ def main():
         return
 
     print("  Generating brief via Claude...")
-    summary = summarize(all_updates, lookback_hours)
+    prior_context = load_recent_summaries(config, days=3)
+    summary = summarize(all_updates, lookback_hours, prior_context=prior_context)
 
     write_brief(summary, all_updates, config)
 
