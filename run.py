@@ -15,6 +15,7 @@ from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
+from tqdm import tqdm
 
 load_dotenv()
 
@@ -51,16 +52,17 @@ def main():
     all_updates = {}
     any_failed = False
 
-    for name, connector in connectors:
-        print(f"  [{name}]", end=" ", flush=True)
-        try:
-            updates = connector.fetch_updates(config, since)
-            all_updates[name] = updates
-            print(f"{len(updates)} items")
-        except Exception as e:
-            print(f"FAILED — {e}")
-            all_updates[name] = []
-            any_failed = True
+    with tqdm(connectors, unit="source", bar_format="  {l_bar}{bar}| {n}/{total} [{elapsed}]", position=0) as pbar:
+        for name, connector in pbar:
+            pbar.set_description(f"  {name:<12}")
+            try:
+                updates = connector.fetch_updates(config, since)
+                all_updates[name] = updates
+                tqdm.write(f"  [{name}] {len(updates)} items")
+            except Exception as e:
+                tqdm.write(f"  [{name}] FAILED — {e}")
+                all_updates[name] = []
+                any_failed = True
 
     total = sum(len(v) for v in all_updates.values())
     print(f"\n  Total: {total} updates")

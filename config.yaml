@@ -12,7 +12,44 @@ lookback_hours: 24
 slack:
   channels:
     - data-engineering
-    # Add any other channels you want to monitor
+    - airflow_prod_alerts
+    - strategic-analytics
+    - data-science-team
+    - de-and-analytics
+    - draaft
+    - airflow_prod_infrastructure_alerts
+    - data_and_accounting
+    - analytics-and-engineering
+    - analytics-and-product
+    - card-collections-initiative
+    - compliance-and-data
+    - cx-analytics
+    - direct-mail-data
+    - draaft_domo_bugs
+    - ds-api-deployments
+    - ds-de
+    - ds-risk
+    - ds-sa
+    - ecommerce_and_data_eng
+    - geo-targeted-marketing-tests-q1
+    - loan-pilot
+    - marketing_and_data_eng
+    - payroll-provider-partnerships
+    - perpay-plus-solo
+    - pinwheel-digest
+    - product-and-risk
+    - project-bundles
+    - project-marketplace-pho
+    - project-sfbe
+    - project-sfbe-eng-de
+    - project-shipping
+    - team_touchbase_ds
+    - team_touchbase_de
+    - tmp_personal_loan_mvp
+    - tmp-mp-pho-spending-limits
+    - credit_reporting_and_compliance
+    - financial_planning_and_analysis
+    - variance-reporting
 
 confluence:
   spaces:
