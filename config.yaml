@@ -2,7 +2,7 @@
 # Edit this file to match your environment. No secrets go here.
 
 # Path to your Obsidian vault
-obsidian_vault_path: ~/Documents/ObsidianVault
+obsidian_vault_path: ~/Documents/chief_of_staff
 # Subfolder inside the vault where briefs will be written
 obsidian_output_folder: Intel Briefs
 
@@ -11,21 +11,20 @@ lookback_hours: 24
 
 slack:
   channels:
-    - general
-    - data-team
-    - engineering
+    - data-engineering
     # Add any other channels you want to monitor
 
 confluence:
   spaces:
-    - DATA
-    - ENG
+    - DS
+    - DE
+    - riskandanalytics
     # Space keys (the short identifier, e.g. "DATA" not the full name)
 
 jira:
   projects:
-    - DATA
-    - ENG
+    - DE
+    - ERP
     # Project keys
 
 gmail:
