@@ -78,3 +78,10 @@ Google credentials are stored **outside the repo** at `~/.config/intel-brief/`:
 - Google OAuth tokens live at `~/.config/intel-brief/` — outside the repo
 - All API access is read-only
 - Slack user token reads only channels you specify in `config.yaml`
+
+---
+
+## Things to add
+
+- Partcular resource (docs/sheets/channels) to put more focus on
+- Create project update outputs via additional command
