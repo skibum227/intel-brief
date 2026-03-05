@@ -20,7 +20,7 @@ from tqdm import tqdm
 load_dotenv()
 
 from src.connectors import confluence, gmail, google_cal, jira, slack
-from src.obsidian import load_recent_summaries, load_user_notes, write_brief
+from src.obsidian import load_recent_summaries, load_user_notes, load_completed_items, write_brief
 from src.state import get_last_run, save_last_run
 from src.summarizer import summarize
 
@@ -76,7 +76,8 @@ def main():
     print("  Generating brief via Claude...")
     prior_context = load_recent_summaries(config, days=3)
     user_notes = load_user_notes(config, days=3)
-    summary = summarize(all_updates, lookback_hours, prior_context=prior_context, user_notes=user_notes)
+    completed_items = load_completed_items(config, days=3)
+    summary = summarize(all_updates, lookback_hours, prior_context=prior_context, user_notes=user_notes, completed_items=completed_items)
 
     write_brief(summary, all_updates, config)
 

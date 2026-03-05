@@ -30,39 +30,30 @@ Urgency markers:
 🟡 Today — should address today but not blocking
 🟢 FYI — good to know, no action needed soon
 
-Be direct. Use bullet points. Omit sections that have nothing meaningful to report.
+Be concise. High signal only — omit anything routine or already resolved.
+Bold only names or ticket/project identifiers (e.g. **Alice**, **PROJ-123**).
 Do not include a title or date heading — the document template provides that."""
 
 USER_PROMPT = """Analyze the updates below from the past {lookback_hours} hours and produce a brief.
 
-{prior_context_block}{user_notes_block}Include only sections with something meaningful to report:
-
-## Priorities & Action Items
-What needs to happen today, ordered by urgency. Use urgency markers.
-
-## Who Needs a Response
-People waiting on me — who, from where (Slack/email/Jira), and why it matters.
-
-## Blockers & Decisions
-Things stalled or requiring my decision. Include the stakes.
+{prior_context_block}{user_notes_block}{resolved_block}Format each of the first three sections as a checklist using `- [ ]` for each item.
+Omit any section that has nothing meaningful to report.
 
 ## Project Pulse
 Key developments across active projects. Skip routine status updates.
+- [ ] ...
 
-## Team Health
-Team members who may need a check-in — blocked, going quiet, overloaded, or waiting on direction.
+## Priorities & Action Items
+What needs to happen today, ordered by urgency. Use urgency markers.
+- [ ] 🔴/🟡/🟢 ...
 
-## Open Loops
-Commitments, questions, or items raised in prior briefs or my notes that haven't been resolved yet.
-
-## Risk & Momentum
-Projects losing velocity, at risk of slipping, or with unresolved dependencies. Flag early.
-
-## Recommendations
-Proactive suggestions based on patterns — what to prioritize, who to talk to, decisions worth making now.
+## Who Needs a Response
+People waiting on me — who, from where (Slack/email/Jira), and why it matters.
+- [ ] **Name** — source, reason
 
 ## This Week's Calendar
 Meetings through end of Friday. Flag any needing prep or with important context.
+(plain text — no checkboxes)
 
 ---
 
@@ -70,7 +61,13 @@ RAW DATA:
 {raw_data}"""
 
 
-def summarize(all_updates: dict, lookback_hours: float, prior_context: str = "", user_notes: str = "") -> str:
+def summarize(
+    all_updates: dict,
+    lookback_hours: float,
+    prior_context: str = "",
+    user_notes: str = "",
+    completed_items: str = "",
+) -> str:
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
     raw_data = json.dumps(all_updates, indent=2, default=str)
@@ -93,6 +90,14 @@ def summarize(all_updates: dict, lookback_hours: float, prior_context: str = "",
     else:
         user_notes_block = ""
 
+    if completed_items:
+        resolved_block = (
+            "RESOLVED (checked off in prior briefs — skip unless there is new development):\n"
+            f"{completed_items}\n\n---\n\n"
+        )
+    else:
+        resolved_block = ""
+
     message = client.messages.create(
         model="claude-opus-4-6",
         max_tokens=4096,
@@ -104,6 +109,7 @@ def summarize(all_updates: dict, lookback_hours: float, prior_context: str = "",
                     lookback_hours=round(lookback_hours, 1),
                     prior_context_block=prior_context_block,
                     user_notes_block=user_notes_block,
+                    resolved_block=resolved_block,
                     raw_data=raw_data,
                 ),
             }
