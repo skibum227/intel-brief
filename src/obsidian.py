@@ -2,37 +2,62 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
+_NOTES_PLACEHOLDER = "<!-- Add your notes here. They will be read into tomorrow's brief. -->"
 
-def load_recent_summaries(config: dict, days: int = 3) -> str:
-    """Return the LLM-generated summary sections from the last `days` brief files."""
+
+def _iter_recent_briefs(config: dict, days: int):
+    """Yield (date, text) for brief files within the last `days` days."""
     vault_path = Path(
         os.path.expanduser(config.get("obsidian_vault_path", "~/Documents/ObsidianVault"))
     )
     output_dir = vault_path / config.get("obsidian_output_folder", "Intel Briefs")
     if not output_dir.exists():
-        return ""
+        return
 
     cutoff = (datetime.now() - timedelta(days=days)).date()
-    briefs = sorted(output_dir.glob("????-??-??.md"), reverse=True)
-
-    sections = []
-    for path in briefs:
+    for path in sorted(output_dir.glob("????-??-??.md"), reverse=True):
         try:
             date = datetime.strptime(path.stem, "%Y-%m-%d").date()
         except ValueError:
             continue
         if date < cutoff:
             break
+        yield path.stem, path.read_text(encoding="utf-8")
 
-        text = path.read_text(encoding="utf-8")
-        # Strip frontmatter (between first two --- delimiters)
+
+def load_recent_summaries(config: dict, days: int = 3) -> str:
+    """Return the LLM-generated summary sections from the last `days` brief files."""
+    sections = []
+    for stem, text in _iter_recent_briefs(config, days):
+        # Strip frontmatter
         parts = text.split("---", 2)
         body = parts[2] if len(parts) >= 3 else text
-        # Strip raw data block (everything from the separator before ## Raw Data)
+        # Strip raw data block
         raw_marker = "\n---\n\n## Raw Data"
         if raw_marker in body:
             body = body.split(raw_marker)[0]
-        sections.append(f"### {path.stem}\n{body.strip()}")
+        # Strip the My Notes section — loaded separately via load_user_notes
+        notes_marker = "\n---\n\n## My Notes"
+        if notes_marker in body:
+            body = body.split(notes_marker)[0]
+        sections.append(f"### {stem}\n{body.strip()}")
+
+    return "\n\n".join(sections)
+
+
+def load_user_notes(config: dict, days: int = 3) -> str:
+    """Return user-written notes from the last `days` brief files."""
+    sections = []
+    for stem, text in _iter_recent_briefs(config, days):
+        notes_marker = "\n---\n\n## My Notes"
+        if notes_marker not in text:
+            continue
+        notes_text = text.split(notes_marker, 1)[1].strip()
+        # Skip empty or placeholder-only sections
+        cleaned = notes_text.replace(_NOTES_PLACEHOLDER, "").strip()
+        if not cleaned:
+            continue
+        sections.append(f"### {stem}\n{cleaned}")
 
     return "\n\n".join(sections)
 
@@ -65,6 +90,11 @@ sources: {list(all_updates.keys())}
 # Intel Brief — {date_str}
 
 {summary_body}
+
+---
+
+## My Notes
+{_NOTES_PLACEHOLDER}
 """
 
     filepath.write_text(content, encoding="utf-8")
