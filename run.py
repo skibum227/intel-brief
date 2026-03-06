@@ -7,10 +7,12 @@ then generates an AI-summarized brief and writes it to your Obsidian vault.
 
 Usage:
     python run.py
+    python run.py --project-update   # adds weekly Project Status Update section
 """
 
+import argparse
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
@@ -21,7 +23,7 @@ load_dotenv()
 
 from src.connectors import confluence, gmail, google_cal, jira, slack
 from src.obsidian import load_recent_summaries, load_user_notes, load_completed_items, write_brief
-from src.state import get_last_run, save_last_run
+from src.state import get_last_run, save_last_run, clear_last_run
 from src.summarizer import summarize
 
 
@@ -32,6 +34,16 @@ def load_config() -> dict:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Intel Brief")
+    parser.add_argument("--project-update", action="store_true", help="Append weekly Project Status Update section")
+    parser.add_argument("--reset-state", action="store_true", help="Clear the last-run timestamp and exit (next run uses fallback lookback window)")
+    args = parser.parse_args()
+
+    if args.reset_state:
+        clear_last_run()
+        print("  Next run will use the fallback lookback window from config.yaml.")
+        return
+
     print("Intel Brief\n")
     config = load_config()
 
@@ -79,7 +91,36 @@ def main():
     completed_items = load_completed_items(config, days=3)
     summary = summarize(all_updates, lookback_hours, prior_context=prior_context, user_notes=user_notes, completed_items=completed_items)
 
-    write_brief(summary, all_updates, config)
+    project_update = ""
+    if args.project_update:
+        from src.connectors import google_sheets
+        from src.summarizer import generate_project_update
+
+        print("  Fetching projects from Google Sheet...")
+        projects = google_sheets.fetch_projects(config)
+        print(f"  {len(projects)} active projects found")
+
+        print("  Fetching team project update pages from Confluence...")
+        confluence_pages = confluence.fetch_team_project_updates(config)
+        print(f"  {len(confluence_pages)} Confluence project update pages fetched")
+
+        print("  Fetching 7-day signals for project update...")
+        since_weekly = datetime.now(timezone.utc) - timedelta(days=7)
+        weekly_updates = {}
+        for name, connector in connectors:
+            try:
+                weekly_updates[name] = connector.fetch_updates(config, since_weekly)
+            except Exception as e:
+                tqdm.write(f"  [{name}] weekly fetch failed — {e}")
+                weekly_updates[name] = []
+
+        prior_context_weekly = load_recent_summaries(config, days=7)
+        print("  Generating project status update...")
+        project_update = generate_project_update(
+            projects, weekly_updates, prior_context_weekly, confluence_pages=confluence_pages
+        )
+
+    write_brief(summary, all_updates, config, project_update=project_update)
 
     if not any_failed:
         save_last_run()

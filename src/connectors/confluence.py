@@ -11,6 +11,130 @@ def _get_cloud_id(base_url: str) -> str:
     return resp.json()["cloudId"]
 
 
+def _strip_html(html: str, skip_first_table: bool = False) -> str:
+    """Strip HTML tags, optionally removing the first table element first."""
+    if skip_first_table:
+        # Remove the first <table>...</table> block (non-greedy, dotall)
+        html = re.sub(r"<table[\s\S]*?</table>", "", html, count=1, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", html)
+    return " ".join(text.split())
+
+
+def _most_recent_child(api_base: str, auth, parent_id: str, depth: int) -> dict | None:
+    """Drill `depth` levels into the child hierarchy, always picking the
+    most-recently-modified child at each level. Returns the target page dict
+    (with at minimum 'id' and 'title'), or None if any level is empty."""
+    resp = requests.get(
+        f"{api_base}/rest/api/content/{parent_id}/child/page",
+        auth=auth,
+        params={"expand": "version", "limit": 50},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    children = resp.json().get("results", [])
+    if not children:
+        return None
+
+    children.sort(key=lambda p: p.get("version", {}).get("when", ""), reverse=True)
+    top = children[0]
+
+    if depth == 0:
+        return top
+    return _most_recent_child(api_base, auth, top["id"], depth - 1)
+
+
+def fetch_team_project_updates(config: dict) -> list[dict]:
+    """For each team space, find the 'Project Tracking' parent page, drill down
+    `nesting_depth` levels to reach the most recent update page, and return its content.
+
+    nesting_depth controls the folder structure:
+      0 = pages directly under "Project Tracking"         (e.g. Data Science)
+      1 = Project Tracking > {year} > page                (e.g. Data Engineering)
+      2 = Project Tracking > {year} > {month} > page      (e.g. Strategic Analytics)
+
+    Returns list of {"space": str, "department": str, "page_title": str,
+                      "content": str, "url": str}
+    """
+    space_configs = (
+        config.get("google_sheets", {})
+              .get("project_tracker", {})
+              .get("confluence_spaces", [])
+    )
+    if not space_configs:
+        return []
+
+    email = os.environ["ATLASSIAN_EMAIL"]
+    base_url = os.environ["ATLASSIAN_BASE_URL"].rstrip("/")
+    cloud_id = _get_cloud_id(base_url)
+    api_base = f"https://api.atlassian.com/ex/confluence/{cloud_id}/wiki"
+    auth = HTTPBasicAuth(email, os.environ["CONFLUENCE_API_TOKEN"])
+
+    results = []
+    for sc in space_configs:
+        space_key = sc["space"]
+        department = sc.get("department", space_key)
+        skip_first_table = sc.get("skip_first_table", False)
+        nesting_depth = sc.get("nesting_depth", 0)
+        try:
+            # Find the "Project Tracking" parent page in this space
+            search_resp = requests.get(
+                f"{api_base}/rest/api/content",
+                auth=auth,
+                params={
+                    "spaceKey": space_key,
+                    "title": "Project Tracking",
+                    "type": "page",
+                    "expand": "version",
+                    "limit": 5,
+                },
+                timeout=30,
+            )
+            search_resp.raise_for_status()
+            pages = search_resp.json().get("results", [])
+            if not pages:
+                print(f"  [project-update] No 'Project Tracking' page found in space {space_key}")
+                continue
+
+            parent_id = pages[0]["id"]
+
+            # Drill down through intermediate folders to the most recent update page
+            target = _most_recent_child(api_base, auth, parent_id, nesting_depth)
+            if not target:
+                print(f"  [project-update] No pages found under 'Project Tracking' in {space_key}")
+                continue
+
+            page_id = target["id"]
+            page_title = target.get("title", "")
+
+            # Fetch full page content
+            detail_resp = requests.get(
+                f"{api_base}/rest/api/content/{page_id}",
+                auth=auth,
+                params={"expand": "body.view,version"},
+                timeout=30,
+            )
+            detail_resp.raise_for_status()
+            details = detail_resp.json()
+
+            body_html = details.get("body", {}).get("view", {}).get("value", "")
+            content = _strip_html(body_html, skip_first_table=skip_first_table)
+            content = content[:8000]
+
+            webui = details.get("_links", {}).get("webui", "")
+            results.append({
+                "space": space_key,
+                "department": department,
+                "page_title": page_title,
+                "content": content,
+                "url": base_url + webui,
+            })
+
+        except Exception as e:
+            print(f"  [project-update] Error fetching project updates for {space_key}: {e}")
+
+    return results
+
+
 def fetch_updates(config: dict, since: datetime) -> list[dict]:
     email = os.environ["ATLASSIAN_EMAIL"]
     base_url = os.environ["ATLASSIAN_BASE_URL"].rstrip("/")

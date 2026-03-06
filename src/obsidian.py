@@ -95,7 +95,7 @@ def load_completed_items(config: dict, days: int = 3) -> str:
     return "\n".join(completed)
 
 
-def write_brief(summary: str, all_updates: dict, config: dict) -> Path:
+def write_brief(summary: str, all_updates: dict, config: dict, project_update: str = "") -> Path:
     vault_path = Path(
         os.path.expanduser(config.get("obsidian_vault_path", "~/Documents/ObsidianVault"))
     )
@@ -115,6 +115,8 @@ def write_brief(summary: str, all_updates: dict, config: dict) -> Path:
         if not (i == 0 and line.startswith("# "))
     ).lstrip("\n")
 
+    project_section = f"{project_update.strip()}\n\n" if project_update else ""
+
     content = f"""---
 date: {date_str}
 generated_at: {time_str}
@@ -125,7 +127,7 @@ sources: {list(all_updates.keys())}
 
 {summary_body}
 
----
+{project_section}---
 
 ## My Notes
 {_NOTES_PLACEHOLDER}

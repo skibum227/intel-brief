@@ -27,3 +27,10 @@ def save_last_run():
     STATE_PATH.write_text(
         json.dumps({"last_run": datetime.now(timezone.utc).isoformat()})
     )
+
+
+def clear_last_run():
+    """Delete the saved state, causing the next run to use the fallback lookback window."""
+    if STATE_PATH.exists():
+        STATE_PATH.unlink()
+        print(f"  State cleared: {STATE_PATH}")

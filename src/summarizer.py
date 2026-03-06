@@ -1,5 +1,7 @@
 import json
 import os
+from collections import defaultdict
+
 import anthropic
 
 SYSTEM_PROMPT = """You are a chief of staff and thought partner for JD (Jonathan), the Head of Data at a fintech startup.
@@ -114,6 +116,91 @@ def summarize(
                 ),
             }
         ],
+    )
+
+    return message.content[0].text
+
+
+_PROJECT_UPDATE_SYSTEM = """You are drafting a Friday project status update for JD's weekly tracker.
+JD is the Head of Data at a fintech startup, overseeing Data Science, Data Engineering, and Analytics.
+
+PRIMARY SOURCE — use the Confluence project update pages for each team. These contain the actual
+week's progress written by team members and are timestamped. Synthesize them into the status summary.
+
+REFERENCE ONLY — the tracker sheet's "Status & Next Steps" column shows last week's recorded status.
+Use it only to understand what has changed or progressed this week. Do NOT copy or paraphrase it.
+
+For each project, write a 1-2 sentence status summary reflecting what actually happened this week,
+and concrete next steps. If Confluence has no signal for a project, draw from Slack/Jira/email but
+make that clear; do not fall back to restating last week's sheet entry.
+
+Output format — return only the markdown below, grouped by department:
+
+## Project Status Update
+
+### Data Science
+- **Project Name**: This week's status. Next steps: ...
+
+### Data Engineering
+- **Project Name**: This week's status. Next steps: ...
+
+### Analytics
+- **Project Name**: This week's status. Next steps: ...
+
+Only include departments that have active projects. Be specific, forward-looking, and concise."""
+
+
+def generate_project_update(
+    projects: list[dict],
+    weekly_updates: dict,
+    prior_context: str,
+    confluence_pages: list[dict] | None = None,
+) -> str:
+    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+
+    # Sheet data: last week's baseline, grouped by department
+    by_dept: dict[str, list[dict]] = defaultdict(list)
+    for p in projects:
+        by_dept[p["department"]].append(p)
+
+    sheet_block = ""
+    for dept, items in by_dept.items():
+        sheet_block += f"\n### {dept}\n"
+        for p in items:
+            sheet_block += f"- **{p['project']}**: {p['last_status']}\n"
+
+    # Confluence pages: this week's primary source
+    confluence_block = ""
+    for page in (confluence_pages or []):
+        confluence_block += (
+            f"\n### {page['department']} — {page['page_title']}\n"
+            f"{page['content']}\n"
+        )
+
+    raw_signals = json.dumps(weekly_updates, indent=2, default=str)
+    if len(raw_signals) > 100_000:
+        raw_signals = raw_signals[:100_000] + "\n\n[... truncated ...]"
+
+    prior_block = (
+        f"PRIOR BRIEFS (last 7 days — continuity context only):\n{prior_context}\n\n---\n\n"
+        if prior_context else ""
+    )
+
+    user_content = (
+        f"{prior_block}"
+        f"LAST WEEK'S TRACKER STATUS (reference only — do not copy):\n{sheet_block}\n\n---\n\n"
+        + (
+            f"THIS WEEK'S CONFLUENCE PROJECT UPDATES (primary source):\n{confluence_block}\n\n---\n\n"
+            if confluence_block else ""
+        )
+        + f"SUPPLEMENTAL SIGNALS (Slack, Jira, email, calendar — 7 days):\n{raw_signals}"
+    )
+
+    message = client.messages.create(
+        model="claude-opus-4-6",
+        max_tokens=2048,
+        system=_PROJECT_UPDATE_SYSTEM,
+        messages=[{"role": "user", "content": user_content}],
     )
 
     return message.content[0].text

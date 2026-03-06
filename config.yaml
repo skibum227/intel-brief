@@ -69,3 +69,26 @@ gmail:
 
 google_cal:
   max_results: 20
+
+google_sheets:
+  project_tracker:
+    sheet_id: 1lq5825aCPOPc-U0yykB9G1JXlWveKhJmDqetMozd3fU
+    gid: 1810627745
+    departments:
+      - Data Science
+      - Data Engineering
+      - Analytics
+    exclude_statuses:
+      - Done
+      - Deprioritized
+    confluence_spaces:
+      - space: DS
+        department: Data Science
+        nesting_depth: 0   # pages sit directly under "Project Tracking"
+      - space: DE
+        department: Data Engineering
+        nesting_depth: 1   # Project Tracking > {year} > page
+      - space: riskandanalytics
+        department: Analytics
+        nesting_depth: 2   # Project Tracking > {year} > {YYYYMM} > Week N
+        skip_first_table: true
