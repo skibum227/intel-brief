@@ -39,13 +39,13 @@ def _iter_recent_briefs(config: dict, days: int):
 
     results.sort(key=lambda x: x[0], reverse=True)
     for dt, path in results:
-        yield dt.strftime("%Y-%m-%d %H:%M"), path.read_text(encoding="utf-8")
+        yield dt.strftime("%Y-%m-%d %H:%M"), path, path.read_text(encoding="utf-8")
 
 
 def load_recent_summaries(config: dict, days: int = 3) -> str:
     """Return the LLM-generated summary sections from the last `days` brief files."""
     sections = []
-    for date_str, text in _iter_recent_briefs(config, days):
+    for date_str, _path, text in _iter_recent_briefs(config, days):
         # Strip frontmatter
         parts = text.split("---", 2)
         body = parts[2] if len(parts) >= 3 else text
@@ -65,7 +65,7 @@ def load_recent_summaries(config: dict, days: int = 3) -> str:
 def load_user_notes(config: dict, days: int = 3) -> str:
     """Return user-written notes from the last `days` brief files."""
     sections = []
-    for date_str, text in _iter_recent_briefs(config, days):
+    for date_str, _path, text in _iter_recent_briefs(config, days):
         notes_marker = "\n---\n\n## My Notes"
         if notes_marker not in text:
             continue
@@ -82,7 +82,7 @@ def load_user_notes(config: dict, days: int = 3) -> str:
 def load_completed_items(config: dict, days: int = 3) -> str:
     """Return checked-off items from the three checkbox sections of recent briefs."""
     completed = []
-    for date_str, text in _iter_recent_briefs(config, days):
+    for date_str, _path, text in _iter_recent_briefs(config, days):
         current_section = None
         for line in text.splitlines():
             if line.startswith("## "):
@@ -93,6 +93,71 @@ def load_completed_items(config: dict, days: int = 3) -> str:
                 completed.append(f"- {item_text} ({date_str})")
 
     return "\n".join(completed)
+
+
+def load_last_brief_for_html(config: dict) -> dict | None:
+    """Parse the most recent brief file and return data suitable for HTML rendering.
+
+    Returns a dict with keys: summary, project_update, sources, generated_at (datetime).
+    Returns None if no recent brief is found.
+    """
+    import ast
+
+    for date_str, md_path, text in _iter_recent_briefs(config, days=30):
+        # Parse frontmatter
+        parts = text.split("---", 2)
+        if len(parts) < 3:
+            continue
+        frontmatter, body = parts[1], parts[2]
+
+        sources = []
+        generated_at = None
+        for line in frontmatter.splitlines():
+            if line.startswith("sources:"):
+                try:
+                    sources = ast.literal_eval(line[len("sources:"):].strip())
+                except (ValueError, SyntaxError):
+                    pass
+            elif line.startswith("date:") and line[len("date:"):].strip():
+                date_val = line[len("date:"):].strip()
+            elif line.startswith("generated_at:") and line[len("generated_at:"):].strip():
+                time_val = line[len("generated_at:"):].strip()
+
+        try:
+            generated_at = datetime.strptime(f"{date_val} {time_val}", "%Y-%m-%d %H:%M")
+        except (ValueError, UnboundLocalError):
+            generated_at = datetime.now()
+
+        # Strip title line
+        body = body.lstrip("\n")
+        lines = body.splitlines()
+        if lines and lines[0].startswith("# Intel Brief"):
+            body = "\n".join(lines[1:]).lstrip("\n")
+
+        # Split off My Notes section
+        notes_marker = "\n---\n\n## My Notes"
+        if notes_marker in body:
+            body = body.split(notes_marker)[0]
+
+        # Split project update from summary body
+        project_update = ""
+        proj_marker = "\n## Project Status Update"
+        if proj_marker in body:
+            summary_part, proj_part = body.split(proj_marker, 1)
+            project_update = "## Project Status Update" + proj_part.rstrip()
+            body = summary_part.rstrip()
+        else:
+            body = body.rstrip()
+
+        return {
+            "summary": body,
+            "project_update": project_update,
+            "sources": sources,
+            "generated_at": generated_at,
+            "md_path": md_path,
+        }
+
+    return None
 
 
 def write_brief(summary: str, all_updates: dict, config: dict, project_update: str = "") -> Path:

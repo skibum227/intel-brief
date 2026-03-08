@@ -38,7 +38,9 @@ Do not include a title or date heading — the document template provides that."
 
 USER_PROMPT = """Analyze the updates below from the past {lookback_hours} hours and produce a brief.
 
-{prior_context_block}{user_notes_block}{resolved_block}Format each of the first three sections as a checklist using `- [ ]` for each item.
+{prior_context_block}{user_notes_block}{resolved_block}Open with a 2–3 sentence executive summary (plain paragraph, no heading) naming the day's main theme and single most important action item.
+
+Then format each of the first three sections as a checklist using `- [ ]` for each item.
 Omit any section that has nothing meaningful to report.
 
 ## Project Pulse

@@ -8,6 +8,9 @@ then generates an AI-summarized brief and writes it to your Obsidian vault.
 Usage:
     python run.py
     python run.py --project-update   # adds weekly Project Status Update section
+    python run.py --html             # also renders a modern HTML dashboard (opens in browser)
+    python run.py --html --project-update
+    python run.py --render-html      # re-render HTML from the last brief without fetching new data
 """
 
 import argparse
@@ -22,7 +25,7 @@ from tqdm import tqdm
 load_dotenv()
 
 from src.connectors import confluence, gmail, google_cal, jira, slack
-from src.obsidian import load_recent_summaries, load_user_notes, load_completed_items, write_brief
+from src.obsidian import load_recent_summaries, load_user_notes, load_completed_items, write_brief, load_last_brief_for_html
 from src.state import get_last_run, save_last_run, clear_last_run
 from src.summarizer import summarize
 
@@ -36,12 +39,37 @@ def load_config() -> dict:
 def main():
     parser = argparse.ArgumentParser(description="Intel Brief")
     parser.add_argument("--project-update", action="store_true", help="Append weekly Project Status Update section")
+    parser.add_argument("--html", action="store_true", help="Also render a modern HTML dashboard and open it in the browser")
+    parser.add_argument("--render-html", action="store_true", help="Re-render HTML from the most recent brief without fetching new data")
     parser.add_argument("--reset-state", action="store_true", help="Clear the last-run timestamp and exit (next run uses fallback lookback window)")
     args = parser.parse_args()
 
     if args.reset_state:
         clear_last_run()
         print("  Next run will use the fallback lookback window from config.yaml.")
+        return
+
+    if args.render_html:
+        from src.html_report import write_html_report
+        config = load_config()
+        brief = load_last_brief_for_html(config)
+        if brief is None:
+            print("  No recent brief found to render.")
+            return
+        print(f"  Re-rendering HTML from brief dated {brief['generated_at'].strftime('%Y-%m-%d %H:%M')} ...")
+        all_updates = {s: [] for s in brief["sources"]}
+        _, httpd = write_html_report(
+            brief["summary"], all_updates, config,
+            lookback_hours=None, now=brief["generated_at"],
+            project_update=brief["project_update"],
+            md_path=brief.get("md_path"),
+        )
+        print(f"  Sync server: http://127.0.0.1:{httpd.server_address[1]}/ — checkboxes sync to Obsidian")
+        print("  Press Ctrl+C to stop.\n")
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print("\n  Sync server stopped.")
         return
 
     print("Intel Brief\n")
@@ -120,14 +148,31 @@ def main():
             projects, weekly_updates, prior_context_weekly, confluence_pages=confluence_pages
         )
 
-    write_brief(summary, all_updates, config, project_update=project_update)
+    md_path = write_brief(summary, all_updates, config, project_update=project_update)
+
+    httpd = None
+    if args.html:
+        from src.html_report import write_html_report
+        _, httpd = write_html_report(
+            summary, all_updates, config, lookback_hours, now,
+            project_update=project_update, md_path=md_path,
+        )
 
     if not any_failed:
         save_last_run()
     else:
         print("\n  Note: some connectors failed — last-run timestamp not updated.")
 
-    print("\nDone.\n")
+    if httpd:
+        port = httpd.server_address[1]
+        print(f"\n  Sync server: http://127.0.0.1:{port}/ — checkboxes sync to Obsidian")
+        print("  Press Ctrl+C to stop.\n")
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print("\n  Sync server stopped.")
+    else:
+        print("\nDone.\n")
 
 
 if __name__ == "__main__":
