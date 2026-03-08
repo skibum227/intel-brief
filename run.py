@@ -15,17 +15,17 @@ Usage:
 
 import argparse
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
-from tqdm import tqdm
 
 load_dotenv()
 
-from src.connectors import confluence, gmail, google_cal, jira, slack
-from src.obsidian import load_recent_summaries, load_user_notes, load_completed_items, write_brief, load_last_brief_for_html
+from src.connectors import confluence, github, gmail, google_cal, jira, slack
+from src.obsidian import load_recent_summaries, load_user_notes, load_completed_items, load_daily_completion_counts, write_brief, load_last_brief_for_html
 from src.state import get_last_run, save_last_run, clear_last_run
 from src.summarizer import summarize
 
@@ -87,20 +87,26 @@ def main():
         ("confluence", confluence),
         ("google_cal", google_cal),
         ("gmail", gmail),
+        ("github", github),
     ]
 
     all_updates = {}
     any_failed = False
 
-    with tqdm(connectors, unit="source", bar_format="  {l_bar}{bar}| {n}/{total} [{elapsed}]", position=0) as pbar:
-        for name, connector in pbar:
-            pbar.set_description(f"  {name:<12}")
+    print("  Fetching from all sources in parallel...")
+    with ThreadPoolExecutor(max_workers=len(connectors)) as executor:
+        futures = {
+            executor.submit(connector.fetch_updates, config, since): name
+            for name, connector in connectors
+        }
+        for future in as_completed(futures):
+            name = futures[future]
             try:
-                updates = connector.fetch_updates(config, since)
+                updates = future.result()
                 all_updates[name] = updates
-                tqdm.write(f"  [{name}] {len(updates)} items")
+                print(f"  [{name}] {len(updates)} items")
             except Exception as e:
-                tqdm.write(f"  [{name}] FAILED — {e}")
+                print(f"  [{name}] FAILED — {e}")
                 all_updates[name] = []
                 any_failed = True
 
@@ -135,12 +141,18 @@ def main():
         print("  Fetching 7-day signals for project update...")
         since_weekly = datetime.now(timezone.utc) - timedelta(days=7)
         weekly_updates = {}
-        for name, connector in connectors:
-            try:
-                weekly_updates[name] = connector.fetch_updates(config, since_weekly)
-            except Exception as e:
-                tqdm.write(f"  [{name}] weekly fetch failed — {e}")
-                weekly_updates[name] = []
+        with ThreadPoolExecutor(max_workers=len(connectors)) as executor:
+            futures = {
+                executor.submit(connector.fetch_updates, config, since_weekly): name
+                for name, connector in connectors
+            }
+            for future in as_completed(futures):
+                name = futures[future]
+                try:
+                    weekly_updates[name] = future.result()
+                except Exception as e:
+                    print(f"  [{name}] weekly fetch failed — {e}")
+                    weekly_updates[name] = []
 
         prior_context_weekly = load_recent_summaries(config, days=7)
         print("  Generating project status update...")

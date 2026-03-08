@@ -79,6 +79,22 @@ def load_user_notes(config: dict, days: int = 3) -> str:
     return "\n\n".join(sections)
 
 
+def load_daily_completion_counts(config: dict, days: int = 7) -> list[int]:
+    """Return list of checked-task counts per day for the last `days` days (oldest first)."""
+    from collections import defaultdict
+    from datetime import date, timedelta
+
+    counts: dict[str, int] = defaultdict(int)
+    for date_str, _path, text in _iter_recent_briefs(config, days):
+        day = date_str[:10]  # YYYY-MM-DD
+        for line in text.splitlines():
+            if line.startswith("- [x]"):
+                counts[day] += 1
+
+    today = date.today()
+    return [counts.get((today - timedelta(days=days - 1 - i)).isoformat(), 0) for i in range(days)]
+
+
 def load_completed_items(config: dict, days: int = 3) -> str:
     """Return checked-off items from the three checkbox sections of recent briefs."""
     completed = []

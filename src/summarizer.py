@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 from collections import defaultdict
 
 import anthropic
@@ -102,7 +103,9 @@ def summarize(
     else:
         resolved_block = ""
 
-    message = client.messages.create(
+    print("\n")
+    full_text = ""
+    with client.messages.stream(
         model="claude-opus-4-6",
         max_tokens=4096,
         system=SYSTEM_PROMPT,
@@ -118,9 +121,13 @@ def summarize(
                 ),
             }
         ],
-    )
-
-    return message.content[0].text
+    ) as stream:
+        for text in stream.text_stream:
+            sys.stdout.write(text)
+            sys.stdout.flush()
+            full_text += text
+    print("\n")
+    return full_text
 
 
 _PROJECT_UPDATE_SYSTEM = """You are drafting a Friday project status update for JD's weekly tracker.
