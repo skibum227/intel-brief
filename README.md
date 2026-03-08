@@ -1,6 +1,6 @@
 # intel-brief
 
-Fetches updates from Slack, Jira, Confluence, Google Calendar, Gmail, and GitHub, then writes an AI-summarized brief into your Obsidian vault — with an optional live HTML dashboard that syncs checkboxes back to Obsidian.
+Fetches updates from Slack, Jira, Confluence, Google Calendar, Gmail, and GitHub, then writes an AI-summarized brief into your Obsidian vault — with an optional live HTML dashboard that syncs checkboxes and notes back to Obsidian.
 
 ```bash
 python run.py                         # daily brief → Obsidian
@@ -9,6 +9,10 @@ python run.py --project-update        # brief + weekly project status section
 python run.py --html --project-update # everything
 python run.py --render-html           # re-open HTML dashboard from the last brief
 python run.py --reset-state           # reset lookback window to config default
+python search.py "query"              # search across all past briefs
+python search.py "query" --limit 5   # limit results
+python migrate_briefs.py             # preview legacy file migration
+python migrate_briefs.py --execute   # apply legacy file migration
 ```
 
 ---
@@ -84,6 +88,17 @@ Fetches PRs awaiting your review and your open PRs.
 
 If `GITHUB_TOKEN` is not set, the GitHub connector is silently skipped.
 
+To restrict GitHub to specific repos, add a `github.repos` list to `config.yaml`:
+
+```yaml
+github:
+  repos:
+    - MyOrg/my-repo
+    - MyOrg/another-repo
+```
+
+If omitted, all repos visible to your token are searched.
+
 ### 7. Configure the project tracker (optional)
 
 The `--project-update` flag reads a Google Sheet to generate a weekly project status section. Configure in `config.yaml`:
@@ -122,16 +137,21 @@ The sheet must have columns containing **department**, **project**, and **status
   - **Who Needs a Response** — people waiting on you
   - **This Week's Calendar** — meetings through Friday
 - Prior briefs (last 3 days) and your checked-off items feed back into the next brief for continuity
+- **Recurring unresolved items** (unchecked across 2+ briefs) are surfaced explicitly so nothing slips through
+- **Critical team signals** are injected when there are blocked Jira tickets or team members with 3+ stale high-priority tickets
 
 ### Output
 - Markdown brief written to `<vault>/<output_folder>/YYYYMM/DD HH-MM.md`
 - `--project-update` appends a `## Project Status Update` section grouped by department
+- Each brief includes a `## My Notes` section at the bottom — write anything there and it feeds into the next day's brief as authoritative context
 
 ### HTML dashboard (`--html` / `--render-html`)
 Runs a local HTTP server and opens the brief in your browser as a live dashboard:
 
 - **Executive summary lede** — 2–3 sentence overview above the detail sections
 - **Checkbox sync** — checking a task in the browser writes `- [x]` back to the Obsidian `.md` file in real time; a "Saved to Obsidian" toast confirms each write
+- **My Notes card** — write notes directly in the dashboard; "Save to Obsidian" (or Cmd/Ctrl+Enter) writes them to the `## My Notes` section of the `.md` file; notes load automatically on page open
+- **NEW badges** — action items that didn't appear in yesterday's brief are tagged `NEW` so you can see what's changed at a glance
 - **Urgency color coding** — 🔴🟡🟢 items get color-coded left borders for fast scanning
 - **Progress bar** — shows `N / total` tasks complete in the card header
 - **7-day sparkline** — small completion trend chart next to the progress bar
@@ -142,6 +162,30 @@ Runs a local HTTP server and opens the brief in your browser as a live dashboard
 - **Light/dark mode toggle** — preference persisted in localStorage
 
 The server runs on `localhost:15173` (or the next free port) and stays alive until `Ctrl+C`. The `/ping` endpoint returns the file path and server status for debugging.
+
+### Search (`search.py`)
+Search across all past briefs from the command line:
+
+```bash
+python search.py "project name"
+python search.py "Alice blocked" --limit 5
+```
+
+- Case-insensitive substring search across all brief `.md` files
+- Shows up to 3 matching snippets per brief with 1 line of surrounding context, match highlighted in `[brackets]`
+- Results sorted newest-first, limited to `--limit` briefs (default 15)
+- Prints an **Obsidian deep-link URI** (`obsidian://open?...`) for each result — click to jump directly to that note in Obsidian
+
+### Migrating legacy brief files (`migrate_briefs.py`)
+
+Older versions of intel-brief wrote briefs as `YYYY-MM-DD.md` directly in the `Intel Briefs/` folder. The current format is `YYYYMM/DD HH-MM.md` (date-based subfolders). To migrate:
+
+```bash
+python migrate_briefs.py             # preview — shows what would be moved, no changes made
+python migrate_briefs.py --execute   # apply — moves files into the new folder structure
+```
+
+Legacy files are renamed to `DD 09-00.md` inside the appropriate `YYYYMM/` subfolder (time defaults to 09:00 since the old format had no time component). Files are skipped if the destination already exists.
 
 ---
 

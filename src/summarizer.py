@@ -39,7 +39,7 @@ Do not include a title or date heading — the document template provides that."
 
 USER_PROMPT = """Analyze the updates below from the past {lookback_hours} hours and produce a brief.
 
-{prior_context_block}{user_notes_block}{resolved_block}Open with a 2–3 sentence executive summary (plain paragraph, no heading) naming the day's main theme and single most important action item.
+{prior_context_block}{user_notes_block}{resolved_block}{recurring_block}{team_signals_block}Open with a 2–3 sentence executive summary (plain paragraph, no heading) naming the day's main theme and single most important action item.
 
 Then format each of the first three sections as a checklist using `- [ ]` for each item.
 Omit any section that has nothing meaningful to report.
@@ -72,6 +72,8 @@ def summarize(
     prior_context: str = "",
     user_notes: str = "",
     completed_items: str = "",
+    recurring_items: str = "",
+    team_signals: str = "",
 ) -> str:
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
@@ -103,6 +105,22 @@ def summarize(
     else:
         resolved_block = ""
 
+    if recurring_items:
+        recurring_block = (
+            "RECURRING UNRESOLVED ITEMS (appeared in multiple recent briefs — still unchecked):\n"
+            f"{recurring_items}\n\n---\n\n"
+        )
+    else:
+        recurring_block = ""
+
+    if team_signals:
+        team_signals_block = (
+            "CRITICAL TEAM SIGNALS (only the most serious flags — act on these):\n"
+            f"{team_signals}\n\n---\n\n"
+        )
+    else:
+        team_signals_block = ""
+
     print("\n")
     full_text = ""
     with client.messages.stream(
@@ -117,6 +135,8 @@ def summarize(
                     prior_context_block=prior_context_block,
                     user_notes_block=user_notes_block,
                     resolved_block=resolved_block,
+                    recurring_block=recurring_block,
+                    team_signals_block=team_signals_block,
                     raw_data=raw_data,
                 ),
             }

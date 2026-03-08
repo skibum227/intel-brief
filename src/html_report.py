@@ -79,6 +79,31 @@ def _toggle_checkbox(md_path: Path, index: int, checked: bool) -> None:
     print(f"  ✗ Obsidian sync: checkbox index {index} not found in {md_path.name} ({n} total)")
 
 
+_NOTES_SECTION = "\n---\n\n## My Notes\n"
+_NOTES_PLACEHOLDER = "<!-- Add your notes here. They will be read into tomorrow's brief. -->"
+
+
+def _read_notes(md_path: Path) -> str:
+    text = md_path.read_text(encoding="utf-8")
+    if _NOTES_SECTION not in text:
+        return ""
+    return text.split(_NOTES_SECTION, 1)[1].replace(_NOTES_PLACEHOLDER, "").strip()
+
+
+def _save_notes(md_path: Path, notes_text: str) -> None:
+    text = md_path.read_text(encoding="utf-8")
+    content = notes_text.strip() if notes_text.strip() else _NOTES_PLACEHOLDER
+    if _NOTES_SECTION in text:
+        before = text.split(_NOTES_SECTION, 1)[0]
+        new_text = before + _NOTES_SECTION + content + "\n"
+    else:
+        new_text = text.rstrip() + _NOTES_SECTION + content + "\n"
+    tmp = md_path.with_suffix(".intel-tmp")
+    tmp.write_text(new_text, encoding="utf-8")
+    os.replace(tmp, md_path)
+    print(f"  ✓ Notes saved to Obsidian ({md_path.name})")
+
+
 def _make_handler(html_bytes: bytes, md_path: Path | None):
     class _Handler(BaseHTTPRequestHandler):
         def _cors(self):
@@ -110,6 +135,14 @@ def _make_handler(html_bytes: bytes, md_path: Path | None):
                 self._cors()
                 self.end_headers()
                 self.wfile.write(payload)
+            elif self.path == "/notes":
+                notes = _read_notes(md_path) if md_path else ""
+                payload = json.dumps({"notes": notes}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self._cors()
+                self.end_headers()
+                self.wfile.write(payload)
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -135,6 +168,29 @@ def _make_handler(html_bytes: bytes, md_path: Path | None):
                     self.wfile.write(b'{"ok":true}')
                 except Exception as e:
                     print(f"  ✗ Sync error: {e}")
+                    self.send_response(500)
+                    self.send_header("Content-Type", "application/json")
+                    self._cors()
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": str(e)}).encode())
+            elif self.path == "/notes":
+                if md_path is None:
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self._cors()
+                    self.end_headers()
+                    self.wfile.write(b'{"error":"no md_path"}')
+                    return
+                length = int(self.headers.get("Content-Length", 0))
+                try:
+                    data = json.loads(self.rfile.read(length))
+                    _save_notes(md_path, data.get("notes", ""))
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self._cors()
+                    self.end_headers()
+                    self.wfile.write(b'{"ok":true}')
+                except Exception as e:
                     self.send_response(500)
                     self.send_header("Content-Type", "application/json")
                     self._cors()
@@ -189,6 +245,7 @@ def _build_html(
     sync_port: int,
     sparkline_data: list[int],
     next_meeting: dict | None,
+    prev_fingerprints: list[str] = None,
 ) -> str:
     date_str = now.strftime("%A, %B %-d, %Y")
     time_str = now.strftime("%I:%M %p").lstrip("0")
@@ -204,6 +261,7 @@ def _build_html(
     project_escaped = js_escape(project_update) if project_update else ""
     sparkline_json = json.dumps(sparkline_data)
     next_meeting_json = json.dumps(next_meeting) if next_meeting else "null"
+    prev_fp_json = json.dumps(prev_fingerprints if prev_fingerprints is not None else [])
 
     return rf"""<!DOCTYPE html>
 <html lang="en" class="dark">
@@ -424,7 +482,7 @@ def _build_html(
     html:not(.dark) .nav-section {{ color: #94a3b8; }}
     .nav-link {{
       display: flex; align-items: flex-start; gap: 0.4rem;
-      padding: 0.28rem 0.75rem; border-radius: 6px;
+      padding: 0.28rem 0.75rem; border-radius: 6px; font-size: 0.9rem;
       font-size: 0.78rem; color: #475569;
       text-decoration: none; transition: all 0.12s;
       line-height: 1.4; word-break: break-word;
@@ -464,6 +522,26 @@ def _build_html(
     .fade-in-delay  {{ animation: fadeUp 0.35s ease 0.06s both; }}
     .fade-in-delay2 {{ animation: fadeUp 0.35s ease 0.12s both; }}
     .section-hidden {{ display: none !important; }}
+
+    /* ── New item badge ───────────────────────────────────── */
+    .new-badge {{
+      font-size: 0.6rem; font-weight: 700; letter-spacing: 0.06em;
+      text-transform: uppercase; color: #818cf8;
+      background: rgba(99,102,241,0.12); border: 1px solid rgba(99,102,241,0.25);
+      padding: 1px 5px; border-radius: 4px; margin-right: 5px;
+      vertical-align: middle; flex-shrink: 0;
+    }}
+
+    /* ── My Notes card ────────────────────────────────────── */
+    .notes-textarea {{
+      width: 100%; min-height: 80px;
+      background: transparent; border: none; outline: none; resize: vertical;
+      font-family: inherit; font-size: 0.9rem; line-height: 1.7;
+      color: #cbd5e1; padding: 0;
+    }}
+    html:not(.dark) .notes-textarea {{ color: #334155; }}
+    .notes-textarea::placeholder {{ color: #475569; }}
+    html:not(.dark) .notes-textarea::placeholder {{ color: #94a3b8; }}
   </style>
 </head>
 <body class="dark:bg-[#0f1117] bg-slate-50 min-h-screen font-sans transition-colors duration-200">
@@ -555,6 +633,27 @@ def _build_html(
         <div id="project-content" class="prose px-6 py-6"></div>
       </div>
 
+      <!-- My Notes card -->
+      <div id="notes-card" class="dark:bg-[#161b27] bg-white rounded-2xl border dark:border-slate-800/60 border-slate-200 shadow-sm overflow-hidden border-t-2 border-t-amber-500/60 fade-in-delay2">
+        <div class="px-6 py-4 border-b dark:border-slate-800/50 border-slate-100 flex items-center justify-between">
+          <div class="flex items-center gap-2.5">
+            <div class="w-1.5 h-5 rounded-full bg-amber-500/70"></div>
+            <div>
+              <h1 class="text-sm font-semibold dark:text-slate-100 text-slate-800">My Notes</h1>
+              <p class="text-xs dark:text-slate-500 text-slate-400 mt-0.5">Feeds into tomorrow's brief as ground truth</p>
+            </div>
+          </div>
+          <button id="notes-save-btn" onclick="saveNotes()"
+            class="text-xs font-medium px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20 hover:bg-amber-500/20 transition-colors">
+            Save to Obsidian
+          </button>
+        </div>
+        <div class="px-6 py-5">
+          <textarea id="notes-input" class="notes-textarea"
+            placeholder="Add corrections, context, or observations — these override raw signals in tomorrow's brief..."></textarea>
+        </div>
+      </div>
+
       <p class="text-xs dark:text-slate-700 text-slate-300 text-center py-3">
         Generated {date_str} at {time_str}
       </p>
@@ -570,6 +669,7 @@ def _build_html(
     const SYNC_PORT       = {sync_port};
     const SPARKLINE_DATA  = {sparkline_json};
     const NEXT_MEETING    = {next_meeting_json};
+    const PREV_FINGERPRINTS = {prev_fp_json};
 
     marked.use({{ breaks: true, gfm: true }});
 
@@ -587,6 +687,16 @@ def _build_html(
       document.getElementById('icon-sun').classList.toggle('hidden', dark);
       document.getElementById('icon-moon').classList.toggle('hidden', !dark);
     }})();
+
+    // ── Item normalization (for diff) ─────────────────────────────────────────
+    function normalizeItem(text) {{
+      return text
+        .replace(/[*_`\[\]]/g, '')
+        .replace(/[^\x00-\x7F]/g, '')
+        .replace(/[^\w\s]/g, ' ')
+        .toLowerCase().trim()
+        .split(/\s+/).slice(0, 6).join(' ');
+    }}
 
     // ── Checkbox state ─────────────────────────────────────────────────────────
     function getState() {{
@@ -671,13 +781,26 @@ def _build_html(
     function setupActiveNav() {{
       const nav = document.getElementById('nav-links');
       if (!nav) return;
-      const observer = new IntersectionObserver(entries => {{
-        entries.forEach(entry => {{
-          const link = nav.querySelector(`a[href="#${{entry.target.id}}"]`);
-          if (link) link.classList.toggle('nav-active', entry.isIntersecting);
+      const headings = Array.from(document.querySelectorAll('h2[id], h3[id]'));
+      if (!headings.length) return;
+
+      function setActive() {{
+        // Find the last heading whose top edge is at or above 25% down the viewport
+        const threshold = window.scrollY + window.innerHeight * 0.25;
+        let active = headings[0];
+        for (const h of headings) {{
+          if (h.getBoundingClientRect().top + window.scrollY <= threshold) {{
+            active = h;
+          }}
+        }}
+        nav.querySelectorAll('.nav-link').forEach(link => {{
+          link.classList.toggle('nav-active', link.getAttribute('href') === '#' + active.id);
         }});
-      }}, {{ rootMargin: '-15% 0px -70% 0px', threshold: 0 }});
-      document.querySelectorAll('h2[id], h3[id]').forEach(h => observer.observe(h));
+      }}
+
+      window.addEventListener('scroll', setActive, {{ passive: true }});
+      // Re-run after layout settles (fonts/images may shift positions)
+      requestAnimationFrame(() => setTimeout(setActive, 100));
     }}
 
     // ── Process rendered markdown ──────────────────────────────────────────────
@@ -717,6 +840,21 @@ def _build_html(
         const txt = document.createElement('span');
         txt.className = 'task-text';
         txt.innerHTML = inner;
+
+        // Diff badge: mark items not present in yesterday's brief
+        if (PREV_FINGERPRINTS.length > 0 && enableSync) {{
+          const fp = normalizeItem(txt.textContent || '');
+          const isNew = !PREV_FINGERPRINTS.some(pf => {{
+            const minLen = Math.min(fp.length, pf.length, 20);
+            return minLen > 4 && fp.slice(0, minLen) === pf.slice(0, minLen);
+          }});
+          if (isNew) {{
+            const badge = document.createElement('span');
+            badge.className = 'new-badge';
+            badge.textContent = 'NEW';
+            txt.prepend(badge);
+          }}
+        }}
 
         wrap.append(box, txt);
         li.appendChild(wrap);
@@ -805,6 +943,31 @@ def _build_html(
       }}
     }}
 
+    // ── My Notes ───────────────────────────────────────────────────────────────
+    function loadNotes() {{
+      if (!SYNC_PORT) return;
+      fetch(`http://127.0.0.1:${{SYNC_PORT}}/notes`)
+        .then(r => r.json())
+        .then(data => {{
+          const el = document.getElementById('notes-input');
+          if (el && data.notes) el.value = data.notes;
+        }}).catch(() => {{}});
+    }}
+
+    function saveNotes() {{
+      if (!SYNC_PORT) return;
+      const notes = document.getElementById('notes-input').value;
+      fetch(`http://127.0.0.1:${{SYNC_PORT}}/notes`, {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ notes }}),
+      }})
+      .then(r => r.json().then(body => {{
+        if (r.ok) showSyncToast(true, 'Notes saved');
+        else showSyncToast(false, body.error || 'save failed');
+      }})).catch(err => showSyncToast(false, err.message));
+    }}
+
     // ── Render ─────────────────────────────────────────────────────────────────
     (function () {{
       const briefEl = document.getElementById('brief-content');
@@ -827,6 +990,10 @@ def _build_html(
       setupActiveNav();
       renderSparkline(SPARKLINE_DATA);
       renderMeetingWidget();
+      loadNotes();
+      document.getElementById('notes-input').addEventListener('keydown', e => {{
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') saveNotes();
+      }});
     }})();
   </script>
 </body>
@@ -841,6 +1008,7 @@ def write_html_report(
     now: datetime,
     project_update: str = "",
     md_path: Path | None = None,
+    prev_fingerprints: list[str] = None,
 ) -> tuple[Path, HTTPServer]:
     from src.obsidian import load_daily_completion_counts
 
@@ -859,6 +1027,7 @@ def write_html_report(
     html = _build_html(
         summary, all_updates, lookback_hours, now, project_update,
         sync_port=port, sparkline_data=sparkline_data, next_meeting=next_meeting,
+        prev_fingerprints=prev_fingerprints,
     )
     html_bytes = html.encode("utf-8")
     filepath.write_text(html, encoding="utf-8")

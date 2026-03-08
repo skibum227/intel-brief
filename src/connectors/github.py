@@ -42,7 +42,10 @@ def fetch_updates(config: dict, since: datetime) -> list[dict]:
         except Exception:
             pass
 
-    _search("is:pr is:open review-requested:@me", "review_requested")
-    _search("is:pr is:open author:@me", "your_pr")
+    repos = config.get("github", {}).get("repos", [])
+    repo_filter = " ".join(f"repo:{r}" for r in repos) if repos else ""
+
+    _search(f"is:pr is:open review-requested:@me {repo_filter}".strip(), "review_requested")
+    _search(f"is:pr is:open author:@me {repo_filter}".strip(), "your_pr")
 
     return results

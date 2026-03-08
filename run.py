@@ -25,7 +25,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from src.connectors import confluence, github, gmail, google_cal, jira, slack
-from src.obsidian import load_recent_summaries, load_user_notes, load_completed_items, load_daily_completion_counts, write_brief, load_last_brief_for_html
+from src.obsidian import (load_recent_summaries, load_user_notes, load_completed_items,
+                           load_daily_completion_counts, load_recurring_unchecked_items,
+                           extract_critical_team_signals, load_prev_brief_fingerprints,
+                           write_brief, load_last_brief_for_html)
 from src.state import get_last_run, save_last_run, clear_last_run
 from src.summarizer import summarize
 
@@ -58,11 +61,13 @@ def main():
             return
         print(f"  Re-rendering HTML from brief dated {brief['generated_at'].strftime('%Y-%m-%d %H:%M')} ...")
         all_updates = {s: [] for s in brief["sources"]}
+        prev_fingerprints = load_prev_brief_fingerprints(config)
         _, httpd = write_html_report(
             brief["summary"], all_updates, config,
             lookback_hours=None, now=brief["generated_at"],
             project_update=brief["project_update"],
             md_path=brief.get("md_path"),
+            prev_fingerprints=prev_fingerprints,
         )
         print(f"  Sync server: http://127.0.0.1:{httpd.server_address[1]}/ — checkboxes sync to Obsidian")
         print("  Press Ctrl+C to stop.\n")
@@ -123,7 +128,10 @@ def main():
     prior_context = load_recent_summaries(config, days=3)
     user_notes = load_user_notes(config, days=3)
     completed_items = load_completed_items(config, days=3)
-    summary = summarize(all_updates, lookback_hours, prior_context=prior_context, user_notes=user_notes, completed_items=completed_items)
+    recurring_items = load_recurring_unchecked_items(config, days=5)
+    team_signals = extract_critical_team_signals(all_updates)
+    prev_fingerprints = load_prev_brief_fingerprints(config)
+    summary = summarize(all_updates, lookback_hours, prior_context=prior_context, user_notes=user_notes, completed_items=completed_items, recurring_items=recurring_items, team_signals=team_signals)
 
     project_update = ""
     if args.project_update:
@@ -168,6 +176,7 @@ def main():
         _, httpd = write_html_report(
             summary, all_updates, config, lookback_hours, now,
             project_update=project_update, md_path=md_path,
+            prev_fingerprints=prev_fingerprints,
         )
 
     if not any_failed:

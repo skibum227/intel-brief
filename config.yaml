@@ -64,6 +64,10 @@ jira:
     - ERP
     # Project keys
 
+github:
+  repos:
+    - Perpay/perpay-airflow
+
 gmail:
   max_results: 50
 

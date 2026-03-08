@@ -95,6 +95,122 @@ def load_daily_completion_counts(config: dict, days: int = 7) -> list[int]:
     return [counts.get((today - timedelta(days=days - 1 - i)).isoformat(), 0) for i in range(days)]
 
 
+def load_recurring_unchecked_items(config: dict, days: int = 5, min_appearances: int = 2) -> str:
+    """Find unchecked action items that appear unresolved across multiple recent briefs."""
+    import re
+    from collections import defaultdict
+
+    def _fingerprint(text: str) -> str:
+        text = re.sub(r'[*_`\[\]]', '', text)
+        text = re.sub(r'https?://\S+', '', text)
+        text = re.sub(r'[^\x00-\x7F]', '', text)
+        text = re.sub(r'[^\w\s]', ' ', text).lower()
+        return ' '.join(text.split()[:7])
+
+    day_items: dict[str, list] = {}
+    for date_str, _path, text in _iter_recent_briefs(config, days):
+        items = []
+        in_section = False
+        for line in text.splitlines():
+            if line.startswith('## '):
+                in_section = line[3:].strip() in _CHECKBOX_SECTIONS
+            elif in_section and line.startswith('- [ ]'):
+                raw = line[5:].strip()
+                fp = _fingerprint(raw)
+                if len(fp) > 8:
+                    items.append((fp, raw))
+        day_items[date_str] = items
+
+    fp_appearances: dict[str, list] = defaultdict(list)
+    for date_str, items in day_items.items():
+        seen: set[str] = set()
+        for fp, original in items:
+            if fp not in seen:
+                fp_appearances[fp].append((date_str, original))
+                seen.add(fp)
+
+    recurring = []
+    for fp, appearances in fp_appearances.items():
+        if len(appearances) >= min_appearances:
+            most_recent_text = sorted(appearances, reverse=True)[0][1]
+            recurring.append((len(appearances), most_recent_text))
+
+    if not recurring:
+        return ""
+
+    recurring.sort(reverse=True)
+    lines = [f"- {text} ({count} days unresolved)" for count, text in recurring[:8]]
+    return "\n".join(lines)
+
+
+def extract_critical_team_signals(all_updates: dict) -> str:
+    """Return ONLY critical team health signals: explicitly blocked tickets and
+    people with 3+ high-priority tickets that have received zero comments."""
+    from collections import defaultdict
+
+    signals = []
+
+    # --- Explicitly blocked Jira tickets ---
+    blocked = []
+    stale_by_person: dict[str, list] = defaultdict(list)
+
+    for ticket in all_updates.get("jira", []):
+        status = ticket.get("status", "").lower()
+        assignee = ticket.get("assignee", "Unassigned")
+        priority = ticket.get("priority", "").lower()
+        labels = [l.lower() for l in ticket.get("labels", [])]
+
+        if "blocked" in status or any("block" in l or "impediment" in l for l in labels):
+            blocked.append(
+                f"  - **{ticket.get('key','')}** ({assignee}): {ticket.get('summary','')[:70]}"
+            )
+
+        if priority in ("highest", "high", "critical") and assignee not in ("Unassigned", ""):
+            if not ticket.get("recent_comments"):
+                stale_by_person[assignee].append(ticket.get("key", ""))
+
+    if blocked:
+        signals.append(f"BLOCKED TICKETS ({len(blocked)}):\n" + "\n".join(blocked[:6]))
+
+    critical_stale = {p: keys for p, keys in stale_by_person.items() if len(keys) >= 3}
+    if critical_stale:
+        lines = [f"  - **{p}**: {', '.join(keys[:5])}" for p, keys in critical_stale.items()]
+        signals.append(
+            "STALE HIGH-PRIORITY TICKETS (assigned, no recent comments):\n" + "\n".join(lines)
+        )
+
+    return "\n\n".join(signals)
+
+
+def load_prev_brief_fingerprints(config: dict) -> list[str]:
+    """Return normalized fingerprints of the previous brief's action items for diff highlighting."""
+    import re
+
+    def _fp(text: str) -> str:
+        text = re.sub(r'[*_`\[\]]', '', text)
+        text = re.sub(r'[^\x00-\x7F]', '', text)
+        text = re.sub(r'[^\w\s]', ' ', text).lower()
+        return ' '.join(text.split()[:6])
+
+    results = list(_iter_recent_briefs(config, days=2))
+    if len(results) < 2:
+        return []
+
+    # results are sorted newest first; second entry is yesterday's brief
+    _, _, text = results[1]
+    fps = []
+    in_section = False
+    for line in text.splitlines():
+        if line.startswith('## '):
+            in_section = line[3:].strip() in _CHECKBOX_SECTIONS
+        elif in_section and (line.startswith('- [ ]') or line.startswith('- [x]')):
+            raw = line[5:].strip()
+            fp = _fp(raw)
+            if len(fp) > 5:
+                fps.append(fp)
+    return fps
+
+
 def load_completed_items(config: dict, days: int = 3) -> str:
     """Return checked-off items from the three checkbox sections of recent briefs."""
     completed = []
