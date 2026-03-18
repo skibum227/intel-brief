@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from src.connectors import confluence, github, gmail, google_cal, jira, slack
+from src.connectors import confluence, github, gmail, google_cal, jira, news, slack
 from src.obsidian import (load_recent_summaries, load_user_notes, load_completed_items,
                            load_daily_completion_counts, load_recurring_unchecked_items,
                            extract_critical_team_signals, load_prev_brief_fingerprints,
@@ -93,6 +93,7 @@ def main():
         ("google_cal", google_cal),
         ("gmail", gmail),
         ("github", github),
+        ("news", news),
     ]
 
     all_updates = {}

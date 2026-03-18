@@ -1,6 +1,8 @@
 import json
 import os
 import sys
+import time
+import random
 from collections import defaultdict
 
 import anthropic
@@ -59,6 +61,9 @@ People waiting on me — who, from where (Slack/email/Jira), and why it matters.
 ## This Week's Calendar
 Meetings through end of Friday. Flag any needing prep or with important context.
 (plain text — no checkboxes)
+
+## Market & Regulatory Intel
+Only include this section if there is genuinely relevant external news — regulatory actions, competitor moves, or macro shifts that directly affect Perpay's business (BNPL, consumer credit, fintech regulation, direct competitors: Affirm, Afterpay, Klarna). Skip anything routine, speculative, or only tangentially related. 2–4 bullet points max, plain text, no checkboxes. Omit the section entirely if nothing clears the bar.
 
 ---
 
@@ -121,9 +126,7 @@ def summarize(
     else:
         team_signals_block = ""
 
-    print("\n")
-    full_text = ""
-    with client.messages.stream(
+    stream_kwargs = dict(
         model="claude-opus-4-6",
         max_tokens=4096,
         system=SYSTEM_PROMPT,
@@ -141,13 +144,26 @@ def summarize(
                 ),
             }
         ],
-    ) as stream:
-        for text in stream.text_stream:
-            sys.stdout.write(text)
-            sys.stdout.flush()
-            full_text += text
+    )
+
     print("\n")
-    return full_text
+    for attempt in range(5):
+        try:
+            full_text = ""
+            with client.messages.stream(**stream_kwargs) as stream:
+                for text in stream.text_stream:
+                    sys.stdout.write(text)
+                    sys.stdout.flush()
+                    full_text += text
+            print("\n")
+            return full_text
+        except anthropic.APIStatusError as e:
+            if e.status_code in (529, 503) and attempt < 4:
+                wait = (2 ** attempt) + random.uniform(0, 1)
+                print(f"\n[overloaded — retrying in {wait:.1f}s, attempt {attempt + 1}/5]")
+                time.sleep(wait)
+            else:
+                raise
 
 
 _PROJECT_UPDATE_SYSTEM = """You are drafting a Friday project status update for JD's weekly tracker.
@@ -225,11 +241,21 @@ def generate_project_update(
         + f"SUPPLEMENTAL SIGNALS (Slack, Jira, email, calendar — 7 days):\n{raw_signals}"
     )
 
-    message = client.messages.create(
+    create_kwargs = dict(
         model="claude-opus-4-6",
         max_tokens=2048,
         system=_PROJECT_UPDATE_SYSTEM,
         messages=[{"role": "user", "content": user_content}],
     )
 
-    return message.content[0].text
+    for attempt in range(5):
+        try:
+            message = client.messages.create(**create_kwargs)
+            return message.content[0].text
+        except anthropic.APIStatusError as e:
+            if e.status_code in (529, 503) and attempt < 4:
+                wait = (2 ** attempt) + random.uniform(0, 1)
+                print(f"[overloaded — retrying in {wait:.1f}s, attempt {attempt + 1}/5]")
+                time.sleep(wait)
+            else:
+                raise

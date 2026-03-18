@@ -68,6 +68,26 @@ github:
   repos:
     - Perpay/perpay-airflow
 
+news:
+  enabled: true
+  # NewsAPI keywords — competitor names, topics, regulations
+  keywords:
+    - Affirm
+    - Afterpay
+    - Klarna
+    - BNPL
+    - "buy now pay later"
+    - "consumer credit"
+    - "fintech regulation"
+    - "CFPB enforcement"
+  # SEC EDGAR 8-K filings for public competitors
+  edgar_tickers:
+    - AFRM   # Affirm
+    - SQ     # Block
+    - PYPL   # PayPal
+  # Add extra RSS feeds here if needed
+  rss_feeds: []
+
 gmail:
   max_results: 50
 
