@@ -44,6 +44,7 @@ Edit `.env` with your credentials (never committed):
 | `ATLASSIAN_BASE_URL` | `https://yourcompany.atlassian.net` |
 | `SLACK_USER_TOKEN` | See Slack setup below |
 | `GITHUB_TOKEN` | See GitHub setup below (optional) |
+| `NEWS_API_KEY` | https://newsapi.org — free tier, 100 req/day (optional) |
 
 ### 3. Configure your vault and channels
 
@@ -90,6 +91,7 @@ If `GITHUB_TOKEN` is not set, the GitHub connector is silently skipped.
 
 To restrict GitHub to specific repos, add a `github.repos` list to `config.yaml`:
 
+
 ```yaml
 github:
   repos:
@@ -99,7 +101,37 @@ github:
 
 If omitted, all repos visible to your token are searched.
 
-### 7. Configure the project tracker (optional)
+### 7. Set up news feeds (optional)
+
+Three sources run automatically — no API key required for two of them:
+
+- **Regulatory RSS** — CFPB, Federal Reserve, OCC, FDIC (always on)
+- **SEC EDGAR 8-K filings** — material events from Affirm, Block, PayPal (always on)
+- **NewsAPI** — keyword-filtered news; requires `NEWS_API_KEY` in `.env`
+
+Configure in `config.yaml` under `news:`:
+
+```yaml
+news:
+  enabled: true
+  keywords:
+    - Affirm
+    - Afterpay
+    - Klarna
+    - BNPL
+    - "buy now pay later"
+    - "consumer credit"
+    - "fintech regulation"
+  edgar_tickers:
+    - AFRM
+    - SQ
+    - PYPL
+  rss_feeds: []   # add extra RSS feed URLs here if needed
+```
+
+Claude filters aggressively — only items directly relevant to Perpay's position appear in the brief. The section is omitted entirely if nothing clears the bar.
+
+### 8. Configure the project tracker (optional)
 
 The `--project-update` flag reads a Google Sheet to generate a weekly project status section. Configure in `config.yaml`:
 
@@ -162,6 +194,15 @@ Runs a local HTTP server and opens the brief in your browser as a live dashboard
 - **Light/dark mode toggle** — preference persisted in localStorage
 
 The server runs on `localhost:15173` (or the next free port) and stays alive until `Ctrl+C`. The `/ping` endpoint returns the file path and server status for debugging.
+
+### Market & Regulatory Intel
+A `## Market & Regulatory Intel` section appears at the bottom of each brief when relevant external signals are found:
+
+- **Regulatory RSS** — CFPB, Fed, OCC, FDIC press releases filtered since last run
+- **SEC EDGAR** — 8-K filings (material events) for Affirm, Block, and PayPal
+- **NewsAPI** — keyword-targeted news for BNPL, competitors, and fintech regulation
+
+Claude only surfaces items that directly affect Perpay's business. The section is omitted entirely on quiet days.
 
 ### Search (`search.py`)
 Search across all past briefs from the command line:
