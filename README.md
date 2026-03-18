@@ -237,3 +237,9 @@ Legacy files are renamed to `DD 09-00.md` inside the appropriate `YYYYMM/` subfo
 - All API access is read-only (GitHub token only needs `repo` read scope)
 - Slack user token reads only the channels listed in `config.yaml`
 - The HTML sync server binds to `127.0.0.1` only — not accessible from the network
+
+---
+
+## ToDos:
+- Make it time aware, dont bug me about meetings that already happened
+- Add in additinal review of any new items that were shared with me
