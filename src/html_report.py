@@ -83,6 +83,8 @@ def _toggle_checkbox(md_path: Path, index: int, checked: bool) -> None:
 
 _NOTES_SECTION = "\n---\n\n## My Notes\n"
 _NOTES_PLACEHOLDER = "<!-- Add your notes here. They will be read into tomorrow's brief. -->"
+_TODOS_SECTION = "\n## My ToDos\n"
+_TODOS_PLACEHOLDER = "<!-- Add tasks here. Unchecked items carry forward to the next brief. -->"
 
 
 def _read_notes(md_path: Path) -> str:
@@ -104,6 +106,61 @@ def _save_notes(md_path: Path, notes_text: str) -> None:
     tmp.write_text(new_text, encoding="utf-8")
     os.replace(tmp, md_path)
     print(f"  ✓ Notes saved to Obsidian ({md_path.name})")
+
+
+def _read_todos(md_path: Path) -> list[dict]:
+    """Read todo items from the My ToDos section. Returns [{text, checked}, ...]."""
+    text = md_path.read_text(encoding="utf-8")
+    if _TODOS_SECTION not in text:
+        return []
+    todos_text = text.split(_TODOS_SECTION, 1)[1]
+    # Stop at the next section boundary
+    for boundary in ("\n---\n", "\n## "):
+        if boundary in todos_text:
+            todos_text = todos_text.split(boundary, 1)[0]
+    items = []
+    for line in todos_text.splitlines():
+        if line.startswith("- [x]"):
+            items.append({"text": line[5:].strip(), "checked": True})
+        elif line.startswith("- [ ]"):
+            items.append({"text": line[5:].strip(), "checked": False})
+    return items
+
+
+def _save_todos(md_path: Path, todos: list[dict]) -> None:
+    """Write todo items back to the My ToDos section."""
+    text = md_path.read_text(encoding="utf-8")
+    if todos:
+        lines = []
+        for item in todos:
+            mark = "x" if item.get("checked") else " "
+            lines.append(f"- [{mark}] {item['text']}")
+        content = "\n".join(lines)
+    else:
+        content = _TODOS_PLACEHOLDER
+
+    if _TODOS_SECTION in text:
+        before = text.split(_TODOS_SECTION, 1)[0]
+        after_section = text.split(_TODOS_SECTION, 1)[1]
+        # Find the end of the todos section (next --- or ## boundary)
+        remainder = ""
+        for boundary in ("\n---\n", "\n## "):
+            if boundary in after_section:
+                idx = after_section.index(boundary)
+                remainder = after_section[idx:]
+                break
+        new_text = before + _TODOS_SECTION + content + "\n" + remainder
+    else:
+        # Insert before My Notes section
+        if _NOTES_SECTION in text:
+            before = text.split(_NOTES_SECTION, 1)[0]
+            new_text = before + _TODOS_SECTION + content + "\n" + _NOTES_SECTION + text.split(_NOTES_SECTION, 1)[1]
+        else:
+            new_text = text.rstrip() + "\n" + _TODOS_SECTION + content + "\n"
+
+    tmp = md_path.with_suffix(".intel-tmp")
+    tmp.write_text(new_text, encoding="utf-8")
+    os.replace(tmp, md_path)
 
 
 def _make_handler(html_bytes: bytes, md_path: Path | None):
@@ -140,6 +197,14 @@ def _make_handler(html_bytes: bytes, md_path: Path | None):
             elif self.path == "/notes":
                 notes = _read_notes(md_path) if md_path else ""
                 payload = json.dumps({"notes": notes}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self._cors()
+                self.end_headers()
+                self.wfile.write(payload)
+            elif self.path == "/todos":
+                todos = _read_todos(md_path) if md_path else []
+                payload = json.dumps({"todos": todos}).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self._cors()
@@ -187,6 +252,29 @@ def _make_handler(html_bytes: bytes, md_path: Path | None):
                 try:
                     data = json.loads(self.rfile.read(length))
                     _save_notes(md_path, data.get("notes", ""))
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self._cors()
+                    self.end_headers()
+                    self.wfile.write(b'{"ok":true}')
+                except Exception as e:
+                    self.send_response(500)
+                    self.send_header("Content-Type", "application/json")
+                    self._cors()
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": str(e)}).encode())
+            elif self.path == "/todos":
+                if md_path is None:
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self._cors()
+                    self.end_headers()
+                    self.wfile.write(b'{"error":"no md_path"}')
+                    return
+                length = int(self.headers.get("Content-Length", 0))
+                try:
+                    data = json.loads(self.rfile.read(length))
+                    _save_todos(md_path, data.get("todos", []))
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self._cors()
@@ -348,16 +436,11 @@ def _build_html(
     </div>
   </div>
 
-  <!-- ── Layout ───────────────────────────────────────────────── -->
-  <div class="max-w-6xl mx-auto px-4 md:px-6 py-8 flex gap-8">
+  <!-- ── Layout: two-column ────────────────────────────────────── -->
+  <div class="mx-auto px-4 md:px-6 py-8 flex gap-6" style="max-width: calc(72rem + 22rem + 1.5rem)">
 
-    <!-- Sidebar -->
-    <aside class="hidden lg:flex flex-col w-48 flex-shrink-0 sticky top-20 self-start max-h-[calc(100vh-6rem)] overflow-y-auto fade-in">
-      <div id="nav-links"></div>
-    </aside>
-
-    <!-- Content -->
-    <main class="flex-1 min-w-0 space-y-4">
+    <!-- Left: Brief content -->
+    <main class="min-w-0 space-y-4" style="width: 72rem; flex-shrink: 1">
 
       <!-- Daily Brief card -->
       <div class="dark:bg-[#161b27] bg-white rounded-2xl border dark:border-slate-800/60 border-slate-200 shadow-sm overflow-hidden border-t-2 border-t-indigo-500/70 fade-in-delay">
@@ -397,31 +480,52 @@ def _build_html(
         <div id="project-content" class="prose px-6 py-6"></div>
       </div>
 
-      <!-- My Notes card -->
-      <div id="notes-card" class="dark:bg-[#161b27] bg-white rounded-2xl border dark:border-slate-800/60 border-slate-200 shadow-sm overflow-hidden border-t-2 border-t-amber-500/60 fade-in-delay2">
-        <div class="px-6 py-4 border-b dark:border-slate-800/50 border-slate-100 flex items-center justify-between">
-          <div class="flex items-center gap-2.5">
-            <div class="w-1.5 h-5 rounded-full bg-amber-500/70"></div>
-            <div>
-              <h1 class="text-sm font-semibold dark:text-slate-100 text-slate-800">My Notes</h1>
-              <p class="text-xs dark:text-slate-500 text-slate-400 mt-0.5">Feeds into tomorrow's brief as ground truth</p>
-            </div>
-          </div>
-          <button id="notes-save-btn" onclick="saveNotes()"
-            class="text-xs font-medium px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20 hover:bg-amber-500/20 transition-colors">
-            Save to Obsidian
-          </button>
-        </div>
-        <div class="px-6 py-5">
-          <textarea id="notes-input" class="notes-textarea"
-            placeholder="Add corrections, context, or observations — these override raw signals in tomorrow's brief..."></textarea>
-        </div>
-      </div>
-
       <p class="text-xs dark:text-slate-700 text-slate-300 text-center py-3">
         Generated {date_str} at {time_str}
       </p>
     </main>
+
+    <!-- Right: Sticky sidebar — ToDos + Notes -->
+    <aside class="hidden lg:flex flex-col flex-shrink-0 sticky top-20 self-start max-h-[calc(100vh-6rem)] overflow-y-auto space-y-4 fade-in" style="width: 22rem">
+
+      <!-- My ToDos card -->
+      <div class="dark:bg-[#161b27] bg-white rounded-2xl border dark:border-slate-800/60 border-slate-200 shadow-sm overflow-hidden border-t-2 border-t-cyan-500/70">
+        <div class="px-4 py-3 border-b dark:border-slate-800/50 border-slate-100 flex items-center gap-2.5">
+          <div class="w-1.5 h-5 rounded-full bg-cyan-500/70"></div>
+          <h2 class="text-sm font-semibold dark:text-slate-100 text-slate-800">My ToDos</h2>
+        </div>
+        <div class="px-4 py-3">
+          <div id="todos-list" class="todos-container space-y-1 text-sm"></div>
+          <div class="mt-3 flex gap-2">
+            <input id="todo-input" type="text"
+              class="flex-1 text-sm dark:bg-slate-800/60 bg-slate-50 border dark:border-slate-700/50 border-slate-200 rounded-lg px-3 py-1.5 dark:text-slate-200 text-slate-800 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-cyan-500/50"
+              placeholder="Add a task..." />
+            <button onclick="addTodo()"
+              class="text-xs font-medium px-3 py-1.5 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 hover:bg-cyan-500/20 transition-colors flex-shrink-0">
+              Add
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- My Notes card -->
+      <div class="dark:bg-[#161b27] bg-white rounded-2xl border dark:border-slate-800/60 border-slate-200 shadow-sm overflow-hidden border-t-2 border-t-amber-500/60">
+        <div class="px-4 py-3 border-b dark:border-slate-800/50 border-slate-100 flex items-center justify-between">
+          <div class="flex items-center gap-2.5">
+            <div class="w-1.5 h-5 rounded-full bg-amber-500/70"></div>
+            <h2 class="text-sm font-semibold dark:text-slate-100 text-slate-800">My Notes</h2>
+          </div>
+          <button id="notes-save-btn" onclick="saveNotes()"
+            class="text-xs font-medium px-2.5 py-1 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20 hover:bg-amber-500/20 transition-colors">
+            Save
+          </button>
+        </div>
+        <div class="px-4 py-3">
+          <textarea id="notes-input" class="sidebar-notes-textarea"
+            placeholder="Corrections, context, observations — feeds into tomorrow's brief..."></textarea>
+        </div>
+      </div>
+    </aside>
   </div>
 
   <div id="sync-toast">Saved to Obsidian</div>

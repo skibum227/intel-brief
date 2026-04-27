@@ -271,6 +271,7 @@ function extractLede(el) {
 // -- Sidebar nav ------------------------------------------------------------
 function buildNav() {
   const nav = document.getElementById('nav-links');
+  if (!nav) return;
   const briefH2s = document.querySelectorAll('#brief-content h2');
   if (briefH2s.length) {
     const lbl = document.createElement('p');
@@ -295,6 +296,88 @@ function buildNav() {
       }));
     });
   }
+}
+
+// -- My ToDos ---------------------------------------------------------------
+let _todos = [];
+
+function loadTodos() {
+  if (!CONFIG.SYNC_PORT) return;
+  fetch(`http://127.0.0.1:${CONFIG.SYNC_PORT}/todos`)
+    .then(r => r.json())
+    .then(data => {
+      _todos = data.todos || [];
+      renderTodos();
+    }).catch(() => {});
+}
+
+function saveTodos() {
+  if (!CONFIG.SYNC_PORT) return;
+  fetch(`http://127.0.0.1:${CONFIG.SYNC_PORT}/todos`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ todos: _todos }),
+  })
+  .then(r => {
+    if (r.ok) showSyncToast(true, 'ToDos saved');
+    else showSyncToast(false, 'ToDo save failed');
+  }).catch(() => showSyncToast(false, 'ToDo save failed'));
+}
+
+function renderTodos() {
+  const list = document.getElementById('todos-list');
+  if (!list) return;
+  list.innerHTML = '';
+
+  // Show unchecked first, then checked
+  const sorted = [..._todos].sort((a, b) => (a.checked === b.checked) ? 0 : a.checked ? 1 : -1);
+
+  sorted.forEach((todo, _) => {
+    const idx = _todos.indexOf(todo);
+    const div = document.createElement('div');
+    div.className = 'todo-item' + (todo.checked ? ' done' : '');
+
+    const box = document.createElement('div');
+    box.className = 'todo-checkbox';
+
+    const txt = document.createElement('span');
+    txt.className = 'todo-text';
+    txt.textContent = todo.text;
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'todo-remove';
+    removeBtn.textContent = '✕';
+    removeBtn.title = 'Remove';
+    removeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      _todos.splice(idx, 1);
+      renderTodos();
+      saveTodos();
+    });
+
+    div.append(box, txt, removeBtn);
+    div.addEventListener('click', () => {
+      _todos[idx].checked = !_todos[idx].checked;
+      renderTodos();
+      saveTodos();
+    });
+
+    list.appendChild(div);
+  });
+
+  if (_todos.length === 0) {
+    list.innerHTML = '<p class="text-xs dark:text-slate-600 text-slate-400 italic">No tasks yet</p>';
+  }
+}
+
+function addTodo() {
+  const input = document.getElementById('todo-input');
+  const text = (input.value || '').trim();
+  if (!text) return;
+  _todos.push({ text, checked: false });
+  input.value = '';
+  renderTodos();
+  saveTodos();
 }
 
 // -- My Notes ---------------------------------------------------------------
@@ -344,7 +427,11 @@ function saveNotes() {
   setupActiveNav();
   renderSparkline(CONFIG.SPARKLINE_DATA);
   renderMeetingWidget();
+  loadTodos();
   loadNotes();
+  document.getElementById('todo-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); addTodo(); }
+  });
   document.getElementById('notes-input').addEventListener('keydown', e => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') saveNotes();
   });

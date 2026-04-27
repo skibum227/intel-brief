@@ -6,6 +6,7 @@ from pathlib import Path
 from src.config import get_vault_path, get_output_dir
 
 _NOTES_PLACEHOLDER = "<!-- Add your notes here. They will be read into tomorrow's brief. -->"
+_TODOS_PLACEHOLDER = "<!-- Add tasks here. Unchecked items carry forward to the next brief. -->"
 
 _CHECKBOX_SECTIONS = {"Project Pulse", "Priorities & Action Items", "Who Needs a Response"}
 
@@ -86,6 +87,25 @@ def load_user_notes(config: dict, days: int = 3) -> str:
         sections.append(f"### {date_str}\n{cleaned}")
 
     return "\n\n".join(sections)
+
+
+def load_open_todos(config: dict) -> list[str]:
+    """Return unchecked todo items from the most recent brief's My ToDos section."""
+    for _date_str, _path, text in _iter_recent_briefs(config, days=7):
+        todos_marker = "\n## My ToDos\n"
+        if todos_marker not in text:
+            continue
+        todos_text = text.split(todos_marker, 1)[1]
+        # Stop at next section boundary
+        for boundary in ("\n---\n", "\n## "):
+            if boundary in todos_text:
+                todos_text = todos_text.split(boundary, 1)[0]
+        items = []
+        for line in todos_text.splitlines():
+            if line.startswith("- [ ]"):
+                items.append(line[5:].strip())
+        return items  # Only check the most recent brief
+    return []
 
 
 def load_daily_completion_counts(config: dict, days: int = 7) -> list[int]:
@@ -305,6 +325,13 @@ def write_brief(summary: str, all_updates: dict, config: dict, project_update: s
 
     project_section = f"{project_update.strip()}\n\n" if project_update else ""
 
+    # Carry forward unchecked todos from previous brief
+    open_todos = load_open_todos(config)
+    if open_todos:
+        todos_lines = "\n".join(f"- [ ] {item}" for item in open_todos)
+    else:
+        todos_lines = _TODOS_PLACEHOLDER
+
     content = f"""---
 date: {date_str}
 generated_at: {time_str}
@@ -315,7 +342,10 @@ sources: {list(all_updates.keys())}
 
 {summary_body}
 
-{project_section}---
+{project_section}## My ToDos
+{todos_lines}
+
+---
 
 ## My Notes
 {_NOTES_PLACEHOLDER}

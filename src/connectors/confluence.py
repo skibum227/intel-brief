@@ -173,56 +173,50 @@ def fetch_updates(config: dict, since: datetime) -> list[dict]:
     # Ensure since is timezone-aware for comparison
     if since.tzinfo is None:
         since = since.replace(tzinfo=timezone.utc)
-    since_iso = since.strftime("%Y-%m-%d %H:%M")
     updates = []
 
     for space_key in spaces:
         try:
-            # Use CQL via the /rest/api/content endpoint's search capability
-            cql = f'space="{space_key}" AND lastModified>="{since_iso}" AND type="page"'
             start = 0
             limit = 50
             while True:
                 resp = requests.get(
-                    f"{api_base}/rest/api/search",
+                    f"{api_base}/rest/api/content",
                     auth=auth,
                     params={
-                        "cql": cql,
+                        "spaceKey": space_key,
+                        "type": "page",
+                        "expand": "version",
                         "limit": limit,
                         "start": start,
                     },
                     timeout=30,
                 )
-                if resp.status_code != 200:
-                    log.warning(
-                        f"[Confluence] CQL search returned {resp.status_code} for space {space_key}; "
-                        f"falling back to pagination"
-                    )
-                    updates.extend(_fetch_updates_paginated(
-                        api_base, auth, base_url, space_key, since, body_chars,
-                    ))
-                    break
-
+                resp.raise_for_status()
                 data = resp.json()
                 results = data.get("results", [])
                 if not results:
                     break
 
-                for result in results:
-                    content_obj = result.get("content", result)
-                    page_id = content_obj.get("id")
-                    updated_at = content_obj.get("version", {}).get("when", "")
-                    title = content_obj.get("title", "")
+                found_any_recent = False
+                for page in results:
+                    updated_at = page.get("version", {}).get("when", "")
+                    if not updated_at:
+                        continue
+                    page_dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+                    if page_dt < since:
+                        continue
 
-                    # CQL search results may not include body — fetch it
+                    found_any_recent = True
+                    page_id = page.get("id")
+
                     detail_resp = requests.get(
                         f"{api_base}/rest/api/content/{page_id}",
                         auth=auth,
                         params={"expand": "body.view,version"},
                         timeout=30,
                     )
-                    if detail_resp.status_code != 200:
-                        continue
+                    detail_resp.raise_for_status()
                     details = detail_resp.json()
 
                     body_html = details.get("body", {}).get("view", {}).get("value", "")
@@ -233,7 +227,7 @@ def fetch_updates(config: dict, since: datetime) -> list[dict]:
                     updates.append({
                         "source": "confluence",
                         "space": space_key,
-                        "title": title,
+                        "title": details.get("title", ""),
                         "author": details.get("version", {}).get("by", {}).get("displayName", ""),
                         "updated_at": updated_at,
                         "url": base_url + webui,
@@ -242,81 +236,11 @@ def fetch_updates(config: dict, since: datetime) -> list[dict]:
 
                 if len(results) < limit:
                     break
+                if not found_any_recent:
+                    break
                 start += limit
 
         except Exception as e:
             log.warning(f"[Confluence] Error fetching space {space_key}: {e}")
-
-    return updates
-
-
-def _fetch_updates_paginated(
-    api_base: str, auth, base_url: str,
-    space_key: str, since: datetime, body_chars: int,
-) -> list[dict]:
-    """Original pagination fallback for when CQL search is unavailable."""
-    updates = []
-    start = 0
-    limit = 50
-    while True:
-        resp = requests.get(
-            f"{api_base}/rest/api/content",
-            auth=auth,
-            params={
-                "spaceKey": space_key,
-                "type": "page",
-                "expand": "version",
-                "limit": limit,
-                "start": start,
-            },
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        results = data.get("results", [])
-        if not results:
-            break
-
-        found_any_recent = False
-        for page in results:
-            updated_at = page.get("version", {}).get("when", "")
-            if not updated_at:
-                continue
-            page_dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-            if page_dt < since:
-                continue
-
-            found_any_recent = True
-            page_id = page.get("id")
-
-            detail_resp = requests.get(
-                f"{api_base}/rest/api/content/{page_id}",
-                auth=auth,
-                params={"expand": "body.view,version"},
-                timeout=30,
-            )
-            detail_resp.raise_for_status()
-            details = detail_resp.json()
-
-            body_html = details.get("body", {}).get("view", {}).get("value", "")
-            clean_body = re.sub(r"<[^>]+>", " ", body_html)
-            clean_body = " ".join(clean_body.split())[:body_chars]
-
-            webui = details.get("_links", {}).get("webui", "")
-            updates.append({
-                "source": "confluence",
-                "space": space_key,
-                "title": details.get("title", ""),
-                "author": details.get("version", {}).get("by", {}).get("displayName", ""),
-                "updated_at": updated_at,
-                "url": base_url + webui,
-                "content": clean_body,
-            })
-
-        if len(results) < limit:
-            break
-        if not found_any_recent:
-            break
-        start += limit
 
     return updates
