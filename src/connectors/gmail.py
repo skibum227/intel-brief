@@ -1,6 +1,11 @@
+import logging
 from datetime import datetime
 from auth.google_auth import get_google_credentials
 from googleapiclient.discovery import build
+
+from src.config import get_limit
+
+log = logging.getLogger("intel_brief")
 
 
 def fetch_updates(config: dict, since: datetime) -> list[dict]:
@@ -8,6 +13,7 @@ def fetch_updates(config: dict, since: datetime) -> list[dict]:
     service = build("gmail", "v1", credentials=creds)
 
     max_results = config.get("gmail", {}).get("max_results", 50)
+    snippet_chars = get_limit(config, "gmail_snippet_chars")
     since_epoch = int(since.timestamp())
     # Exclude newsletters, social, and promotions
     query = f"after:{since_epoch} -category:promotions -category:social"
@@ -34,7 +40,7 @@ def fetch_updates(config: dict, since: datetime) -> list[dict]:
                 "from": headers.get("From", ""),
                 "to": headers.get("To", ""),
                 "date": headers.get("Date", ""),
-                "snippet": response.get("snippet", "")[:300],
+                "snippet": response.get("snippet", "")[:snippet_chars],
             })
 
         batch = service.new_batch_http_request(callback=handle_message)
@@ -50,6 +56,6 @@ def fetch_updates(config: dict, since: datetime) -> list[dict]:
         batch.execute()
 
     except Exception as e:
-        print(f"[Gmail] Error: {e}")
+        log.warning(f"[Gmail] Error: {e}")
 
     return updates

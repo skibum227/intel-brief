@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+from src.dismissed import add_dismissed
+
 
 _SOURCE_STYLES = {
     "slack":      ("Slack",      "rgba(167,139,250,0.15)", "#c4b5fd"),
@@ -196,6 +198,24 @@ def _make_handler(html_bytes: bytes, md_path: Path | None):
                     self._cors()
                     self.end_headers()
                     self.wfile.write(json.dumps({"error": str(e)}).encode())
+            elif self.path == "/dismiss":
+                length = int(self.headers.get("Content-Length", 0))
+                try:
+                    data = json.loads(self.rfile.read(length))
+                    fingerprint = data.get("fingerprint", "")
+                    if fingerprint:
+                        add_dismissed(fingerprint)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self._cors()
+                    self.end_headers()
+                    self.wfile.write(b'{"ok":true}')
+                except Exception as e:
+                    self.send_response(500)
+                    self.send_header("Content-Type", "application/json")
+                    self._cors()
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": str(e)}).encode())
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -263,7 +283,11 @@ def _build_html(
     next_meeting_json = json.dumps(next_meeting) if next_meeting else "null"
     prev_fp_json = json.dumps(prev_fingerprints if prev_fingerprints is not None else [])
 
-    return rf"""<!DOCTYPE html>
+    _TEMPLATES_DIR = Path(__file__).parent / "templates"
+    css_text = (_TEMPLATES_DIR / "brief.css").read_text(encoding="utf-8")
+    js_text = (_TEMPLATES_DIR / "brief.js").read_text(encoding="utf-8")
+
+    return f"""<!DOCTYPE html>
 <html lang="en" class="dark">
 <head>
   <meta charset="UTF-8" />
@@ -281,267 +305,7 @@ def _build_html(
   <link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet" />
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
-    * {{ box-sizing: border-box; }}
-    html {{ scroll-behavior: smooth; }}
-
-    /* ── Lede ─────────────────────────────────────────────── */
-    .brief-lede {{ padding: 0.25rem 0 0.5rem; }}
-    .brief-lede p {{
-      font-size: 1rem !important;
-      color: #94a3b8 !important;
-      line-height: 1.85 !important;
-      font-weight: 400 !important;
-      margin: 0 !important;
-    }}
-    html:not(.dark) .brief-lede p {{ color: #475569 !important; }}
-    .lede-divider {{
-      height: 1px;
-      background: rgba(148,163,184,0.1);
-      margin: 1.5rem 0 0.5rem;
-    }}
-
-    /* ── Prose ────────────────────────────────────────────── */
-    .prose h2 {{
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      font-size: 0.7rem;
-      font-weight: 700;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: #64748b;
-      margin: 2.25rem 0 0.9rem;
-      cursor: pointer;
-      user-select: none;
-    }}
-    .prose h2::before {{
-      content: '';
-      display: inline-block;
-      width: 3px;
-      height: 0.9rem;
-      border-radius: 2px;
-      background: #6366f1;
-      flex-shrink: 0;
-      transition: opacity 0.15s;
-    }}
-    .prose h2.section-collapsed::before {{ opacity: 0.3; }}
-    .prose h2::after {{
-      content: '▾';
-      font-size: 0.65rem;
-      margin-left: auto;
-      opacity: 0.3;
-      transition: transform 0.15s, opacity 0.15s;
-    }}
-    .prose h2.section-collapsed::after {{ transform: rotate(-90deg); opacity: 0.2; }}
-    #project-content .prose h2::before {{ background: #10b981; }}
-    .prose h3 {{
-      display: flex;
-      align-items: center;
-      gap: 0.45rem;
-      font-size: 0.82rem;
-      font-weight: 600;
-      color: #94a3b8;
-      margin: 1.75rem 0 0.5rem;
-      letter-spacing: 0.01em;
-    }}
-    .prose h3::before {{
-      content: '';
-      display: inline-block;
-      width: 2px;
-      height: 0.75rem;
-      border-radius: 2px;
-      background: #6366f1;
-      opacity: 0.5;
-      flex-shrink: 0;
-    }}
-    #project-content .prose h3::before {{ background: #10b981; }}
-    .prose p {{ color: #cbd5e1; line-height: 1.75; margin: 0.5rem 0; font-size: 0.9rem; }}
-    .prose strong {{ color: #e2e8f0; font-weight: 600; }}
-    .prose em {{ color: #94a3b8; font-style: italic; }}
-    .prose ul {{ list-style: none; padding: 0; margin: 0.25rem 0 0.75rem; }}
-    .prose li {{ color: #cbd5e1; line-height: 1.7; font-size: 0.9rem; padding: 0; position: relative; }}
-    .prose li.plain-li {{ padding-left: 1.1rem; }}
-    .prose li.plain-li::before {{ content: '–'; position: absolute; left: 0; color: #475569; font-weight: 300; }}
-    .prose hr {{ border: none; border-top: 1px solid rgba(148,163,184,0.08); margin: 2rem 0; }}
-    .prose code {{
-      font-size: 0.8em;
-      background: rgba(148,163,184,0.1);
-      padding: 0.15em 0.4em;
-      border-radius: 4px;
-      color: #e2e8f0;
-    }}
-    .prose a {{ color: #818cf8; text-decoration: none; }}
-    .prose a:hover {{ text-decoration: underline; }}
-
-    html:not(.dark) .prose h2 {{ color: #94a3b8; }}
-    html:not(.dark) .prose h3 {{ color: #475569; }}
-    html:not(.dark) .prose p  {{ color: #334155; }}
-    html:not(.dark) .prose strong {{ color: #1e293b; }}
-    html:not(.dark) .prose li {{ color: #334155; }}
-    html:not(.dark) .prose li.plain-li::before {{ color: #94a3b8; }}
-    html:not(.dark) .prose code {{ background: rgba(71,85,105,0.08); color: #1e293b; }}
-    html:not(.dark) .prose a {{ color: #6366f1; }}
-
-    /* ── Task checkboxes ──────────────────────────────────── */
-    .task-item {{
-      display: flex;
-      align-items: flex-start;
-      gap: 0.6rem;
-      padding: 0.3rem 0.5rem;
-      margin: 0.15rem -0.5rem;
-      border-radius: 7px;
-      cursor: pointer;
-      transition: background 0.1s;
-      border-left: 2px solid transparent;
-    }}
-    .task-item:hover {{ background: rgba(148,163,184,0.06); }}
-    .task-item.done .task-text {{ text-decoration: line-through; opacity: 0.32; }}
-    .task-checkbox {{
-      flex-shrink: 0;
-      width: 15px;
-      height: 15px;
-      margin-top: 3px;
-      border-radius: 4px;
-      border: 1.5px solid rgba(148,163,184,0.3);
-      background: transparent;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: all 0.15s;
-    }}
-    .task-item.done .task-checkbox {{
-      background: #6366f1;
-      border-color: #6366f1;
-    }}
-    .task-item.done .task-checkbox::after {{
-      content: '';
-      width: 8px;
-      height: 4px;
-      border-left: 1.5px solid white;
-      border-bottom: 1.5px solid white;
-      transform: rotate(-45deg) translateY(-1px);
-      display: block;
-    }}
-    .task-text {{ font-size: 0.9rem; color: #cbd5e1; line-height: 1.65; }}
-    html:not(.dark) .task-text {{ color: #334155; }}
-
-    /* ── Urgency borders ──────────────────────────────────── */
-    .task-item.urgency-red    {{ border-left-color: rgba(239,68,68,0.5);  padding-left: calc(0.5rem - 2px); }}
-    .task-item.urgency-yellow {{ border-left-color: rgba(245,158,11,0.5); padding-left: calc(0.5rem - 2px); }}
-    .task-item.urgency-green  {{ border-left-color: rgba(34,197,94,0.3);  padding-left: calc(0.5rem - 2px); }}
-
-    /* ── Progress bar ─────────────────────────────────────── */
-    .progress-track {{
-      width: 44px; height: 4px; border-radius: 9999px;
-      background: rgba(148,163,184,0.12); overflow: hidden;
-    }}
-    .progress-fill {{
-      height: 100%; border-radius: 9999px;
-      background: #6366f1; transition: width 0.4s ease;
-    }}
-
-    /* ── Sparkline ────────────────────────────────────────── */
-    .sparkline {{ display: block; }}
-
-    /* ── Next meeting chip ────────────────────────────────── */
-    .meeting-chip {{
-      display: inline-flex; align-items: center; gap: 5px;
-      padding: 3px 10px 3px 8px; border-radius: 9999px;
-      font-size: 0.71rem; font-weight: 500;
-      background: rgba(99,102,241,0.1);
-      border: 1px solid rgba(99,102,241,0.2);
-      color: #818cf8;
-      max-width: 260px; overflow: hidden;
-      white-space: nowrap; text-overflow: ellipsis;
-    }}
-    html:not(.dark) .meeting-chip {{
-      background: rgba(99,102,241,0.07);
-      border-color: rgba(99,102,241,0.2);
-      color: #6366f1;
-    }}
-
-    /* ── Sync toast ───────────────────────────────────────── */
-    #sync-toast {{
-      position: fixed; bottom: 1.5rem; right: 1.5rem;
-      font-size: 0.75rem; padding: 0.4rem 0.9rem; border-radius: 8px;
-      opacity: 0; transform: translateY(4px);
-      transition: opacity 0.2s, transform 0.2s; pointer-events: none;
-      background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.3); color: #34d399;
-    }}
-    #sync-toast.show {{ opacity: 1; transform: translateY(0); }}
-    #sync-toast.error {{
-      background: rgba(239,68,68,0.15); border-color: rgba(239,68,68,0.3); color: #f87171;
-    }}
-
-    /* ── Sidebar nav ──────────────────────────────────────── */
-    .nav-section {{
-      font-size: 0.65rem; font-weight: 700;
-      letter-spacing: 0.1em; text-transform: uppercase;
-      color: #334155; padding: 0.25rem 0.75rem; margin-top: 1rem;
-    }}
-    html:not(.dark) .nav-section {{ color: #94a3b8; }}
-    .nav-link {{
-      display: flex; align-items: flex-start; gap: 0.4rem;
-      padding: 0.28rem 0.75rem; border-radius: 6px; font-size: 0.9rem;
-      font-size: 0.78rem; color: #475569;
-      text-decoration: none; transition: all 0.12s;
-      line-height: 1.4; word-break: break-word;
-    }}
-    .nav-link::before {{
-      content: ''; width: 4px; height: 4px; border-radius: 50%;
-      background: currentColor; flex-shrink: 0; opacity: 0.4;
-      margin-top: 6px;
-    }}
-    html:not(.dark) .nav-link {{ color: #94a3b8; }}
-    .nav-link:hover {{ background: rgba(148,163,184,0.08); color: #94a3b8; }}
-    html:not(.dark) .nav-link:hover {{ color: #64748b; }}
-    .nav-link.nav-active {{
-      color: #818cf8; background: rgba(99,102,241,0.08); font-weight: 500;
-    }}
-    html:not(.dark) .nav-link.nav-active {{
-      color: #6366f1; background: rgba(99,102,241,0.06);
-    }}
-
-    /* ── Source pills ─────────────────────────────────────── */
-    .source-pill {{
-      display: inline-flex; align-items: center; gap: 5px;
-      padding: 4px 11px 4px 8px; border-radius: 9999px;
-      font-size: 0.71rem; font-weight: 500; letter-spacing: 0.02em;
-    }}
-    .source-dot {{ width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }}
-
-    /* ── Misc ─────────────────────────────────────────────── */
-    ::-webkit-scrollbar {{ width: 4px; }}
-    ::-webkit-scrollbar-track {{ background: transparent; }}
-    ::-webkit-scrollbar-thumb {{ background: rgba(148,163,184,0.15); border-radius: 2px; }}
-    @keyframes fadeUp {{
-      from {{ opacity: 0; transform: translateY(8px); }}
-      to   {{ opacity: 1; transform: translateY(0); }}
-    }}
-    .fade-in        {{ animation: fadeUp 0.3s ease both; }}
-    .fade-in-delay  {{ animation: fadeUp 0.35s ease 0.06s both; }}
-    .fade-in-delay2 {{ animation: fadeUp 0.35s ease 0.12s both; }}
-    .section-hidden {{ display: none !important; }}
-
-    /* ── New item badge ───────────────────────────────────── */
-    .new-badge {{
-      font-size: 0.6rem; font-weight: 700; letter-spacing: 0.06em;
-      text-transform: uppercase; color: #818cf8;
-      background: rgba(99,102,241,0.12); border: 1px solid rgba(99,102,241,0.25);
-      padding: 1px 5px; border-radius: 4px; margin-right: 5px;
-      vertical-align: middle; flex-shrink: 0;
-    }}
-
-    /* ── My Notes card ────────────────────────────────────── */
-    .notes-textarea {{
-      width: 100%; min-height: 80px;
-      background: transparent; border: none; outline: none; resize: vertical;
-      font-family: inherit; font-size: 0.9rem; line-height: 1.7;
-      color: #cbd5e1; padding: 0;
-    }}
-    html:not(.dark) .notes-textarea {{ color: #334155; }}
-    .notes-textarea::placeholder {{ color: #475569; }}
-    html:not(.dark) .notes-textarea::placeholder {{ color: #94a3b8; }}
+{css_text}
   </style>
 </head>
 <body class="dark:bg-[#0f1117] bg-slate-50 min-h-screen font-sans transition-colors duration-200">
@@ -663,338 +427,18 @@ def _build_html(
   <div id="sync-toast">Saved to Obsidian</div>
 
   <script>
-    const BRIEF_MD        = `{summary_escaped}`;
-    const PROJECT_MD      = `{project_escaped}`;
-    const REPORT_KEY      = '{report_key}';
-    const SYNC_PORT       = {sync_port};
-    const SPARKLINE_DATA  = {sparkline_json};
-    const NEXT_MEETING    = {next_meeting_json};
-    const PREV_FINGERPRINTS = {prev_fp_json};
-
-    marked.use({{ breaks: true, gfm: true }});
-
-    // ── Theme ──────────────────────────────────────────────────────────────────
-    function toggleTheme() {{
-      const dark = document.documentElement.classList.toggle('dark');
-      localStorage.setItem('intel-theme', dark ? 'dark' : 'light');
-      document.getElementById('icon-sun').classList.toggle('hidden', dark);
-      document.getElementById('icon-moon').classList.toggle('hidden', !dark);
-    }}
-    (function () {{
-      const saved = localStorage.getItem('intel-theme');
-      const dark = saved ? saved === 'dark' : true;
-      document.documentElement.classList.toggle('dark', dark);
-      document.getElementById('icon-sun').classList.toggle('hidden', dark);
-      document.getElementById('icon-moon').classList.toggle('hidden', !dark);
-    }})();
-
-    // ── Item normalization (for diff) ─────────────────────────────────────────
-    function normalizeItem(text) {{
-      return text
-        .replace(/[*_`\[\]]/g, '')
-        .replace(/[^\x00-\x7F]/g, '')
-        .replace(/[^\w\s]/g, ' ')
-        .toLowerCase().trim()
-        .split(/\s+/).slice(0, 6).join(' ');
-    }}
-
-    // ── Checkbox state ─────────────────────────────────────────────────────────
-    function getState() {{
-      try {{ return JSON.parse(localStorage.getItem(REPORT_KEY) || '{{}}'); }}
-      catch {{ return {{}}; }}
-    }}
-    function setState(s) {{ localStorage.setItem(REPORT_KEY, JSON.stringify(s)); }}
-
-    // ── Sync toast ─────────────────────────────────────────────────────────────
-    let toastTimer;
-    function showSyncToast(ok, msg) {{
-      const t = document.getElementById('sync-toast');
-      t.textContent = ok ? 'Saved to Obsidian' : ('Sync failed: ' + msg);
-      t.classList.toggle('error', !ok);
-      t.classList.add('show');
-      clearTimeout(toastTimer);
-      toastTimer = setTimeout(() => t.classList.remove('show'), ok ? 2000 : 5000);
-    }}
-
-    // ── Sparkline ──────────────────────────────────────────────────────────────
-    function renderSparkline(data) {{
-      const svgEl = document.getElementById('sparkline');
-      if (!svgEl || !data || data.length < 2) return;
-      const w = 52, h = 22, pad = 2;
-      const max = Math.max(...data, 1);
-      const xStep = (w - pad * 2) / (data.length - 1);
-      const pts = data.map((v, i) => {{
-        const x = pad + i * xStep;
-        const y = h - pad - (v / max) * (h - pad * 2);
-        return `${{x.toFixed(1)}},${{y.toFixed(1)}}`;
-      }}).join(' ');
-      const last = data[data.length - 1];
-      const lastX = (pad + (data.length - 1) * xStep).toFixed(1);
-      const lastY = (h - pad - (last / max) * (h - pad * 2)).toFixed(1);
-      svgEl.innerHTML = `
-        <polyline points="${{pts}}" fill="none" stroke="#6366f1" stroke-width="1.5"
-          stroke-linecap="round" stroke-linejoin="round" opacity="0.6"/>
-        <circle cx="${{lastX}}" cy="${{lastY}}" r="2" fill="#6366f1" opacity="0.9"/>`;
-      svgEl.classList.remove('hidden');
-    }}
-
-    // ── Next meeting widget ────────────────────────────────────────────────────
-    function renderMeetingWidget() {{
-      if (!NEXT_MEETING) return;
-      const w = document.getElementById('meeting-widget');
-      const att = NEXT_MEETING.attendees > 0 ? ` · ${{NEXT_MEETING.attendees}} attendees` : '';
-      w.innerHTML = `<span class="meeting-chip">
-        <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8">
-          <rect x="2" y="3" width="12" height="11" rx="2"/>
-          <path stroke-linecap="round" d="M5 1v3M11 1v3M2 7h12"/>
-        </svg>
-        ${{NEXT_MEETING.title}} &middot; ${{NEXT_MEETING.when}}${{att}}
-      </span>`;
-      w.classList.remove('hidden');
-    }}
-
-    // ── Progress bar ───────────────────────────────────────────────────────────
-    function updateProgress() {{
-      const total = document.querySelectorAll('#brief-content .task-item').length;
-      const done  = document.querySelectorAll('#brief-content .task-item.done').length;
-      const fill  = document.getElementById('brief-progress-fill');
-      const label = document.getElementById('brief-progress-label');
-      if (fill)  fill.style.width  = total ? `${{Math.round((done / total) * 100)}}%` : '0%';
-      if (label) label.textContent = `${{done}} / ${{total}}`;
-    }}
-
-    // ── Collapsible h2 sections ────────────────────────────────────────────────
-    function makeCollapsible(el) {{
-      el.querySelectorAll('h2').forEach(h => {{
-        h.addEventListener('click', () => {{
-          const collapsed = h.classList.toggle('section-collapsed');
-          let next = h.nextElementSibling;
-          while (next && next.tagName !== 'H2') {{
-            next.classList.toggle('section-hidden', collapsed);
-            next = next.nextElementSibling;
-          }}
-        }});
-      }});
-    }}
-
-    // ── Active sidebar highlight ───────────────────────────────────────────────
-    function setupActiveNav() {{
-      const nav = document.getElementById('nav-links');
-      if (!nav) return;
-      const headings = Array.from(document.querySelectorAll('h2[id], h3[id]'));
-      if (!headings.length) return;
-
-      function setActive() {{
-        // Find the last heading whose top edge is at or above 25% down the viewport
-        const threshold = window.scrollY + window.innerHeight * 0.25;
-        let active = headings[0];
-        for (const h of headings) {{
-          if (h.getBoundingClientRect().top + window.scrollY <= threshold) {{
-            active = h;
-          }}
-        }}
-        nav.querySelectorAll('.nav-link').forEach(link => {{
-          link.classList.toggle('nav-active', link.getAttribute('href') === '#' + active.id);
-        }});
-      }}
-
-      window.addEventListener('scroll', setActive, {{ passive: true }});
-      // Re-run after layout settles (fonts/images may shift positions)
-      requestAnimationFrame(() => setTimeout(setActive, 100));
-    }}
-
-    // ── Process rendered markdown ──────────────────────────────────────────────
-    function processContent(el, keyPrefix, startSyncIdx, enableSync) {{
-      const state = getState();
-      let syncIdx = startSyncIdx;
-
-      el.querySelectorAll('li').forEach((li, i) => {{
-        const inputEl = li.querySelector('input[type="checkbox"]');
-        if (!inputEl) {{
-          li.classList.add('plain-li');
-          return;
-        }}
-        const isChecked = inputEl.checked;
-        const cbSyncIdx = syncIdx++;
-        const key = keyPrefix + '-' + i;
-        const done = state[key] !== undefined ? state[key] : isChecked;
-
-        inputEl.remove();
-        const inner = li.innerHTML.trim();
-
-        li.innerHTML = '';
-        li.style.cssText = 'list-style:none;padding:0';
-
-        const wrap = document.createElement('div');
-        wrap.className = 'task-item' + (done ? ' done' : '');
-
-        // Urgency border
-        const text = inner.replace(/<[^>]+>/g, '');
-        if (text.includes('🔴')) wrap.classList.add('urgency-red');
-        else if (text.includes('🟡')) wrap.classList.add('urgency-yellow');
-        else if (text.includes('🟢')) wrap.classList.add('urgency-green');
-
-        const box = document.createElement('div');
-        box.className = 'task-checkbox';
-
-        const txt = document.createElement('span');
-        txt.className = 'task-text';
-        txt.innerHTML = inner;
-
-        // Diff badge: mark items not present in yesterday's brief
-        if (PREV_FINGERPRINTS.length > 0 && enableSync) {{
-          const fp = normalizeItem(txt.textContent || '');
-          const isNew = !PREV_FINGERPRINTS.some(pf => {{
-            const minLen = Math.min(fp.length, pf.length, 20);
-            return minLen > 4 && fp.slice(0, minLen) === pf.slice(0, minLen);
-          }});
-          if (isNew) {{
-            const badge = document.createElement('span');
-            badge.className = 'new-badge';
-            badge.textContent = 'NEW';
-            txt.prepend(badge);
-          }}
-        }}
-
-        wrap.append(box, txt);
-        li.appendChild(wrap);
-
-        wrap.addEventListener('click', () => {{
-          const s = getState();
-          const nowDone = !wrap.classList.contains('done');
-          wrap.classList.toggle('done', nowDone);
-          s[key] = nowDone;
-          setState(s);
-          updateProgress();
-
-          if (enableSync && SYNC_PORT) {{
-            console.log(`[sync] POST index=${{cbSyncIdx}} checked=${{nowDone}} → http://127.0.0.1:${{SYNC_PORT}}/sync`);
-            fetch(`http://127.0.0.1:${{SYNC_PORT}}/sync`, {{
-              method: 'POST',
-              headers: {{ 'Content-Type': 'application/json' }},
-              body: JSON.stringify({{ index: cbSyncIdx, checked: nowDone }}),
-            }})
-            .then(r => r.json().then(body => {{
-              console.log('[sync] response:', r.status, body);
-              if (r.ok) showSyncToast(true);
-              else showSyncToast(false, body.error || r.status);
-            }}))
-            .catch(err => {{
-              console.error('[sync] fetch error:', err);
-              showSyncToast(false, err.message || 'network error');
-            }});
-          }}
-        }});
-      }});
-
-      el.querySelectorAll('h2').forEach(h => {{
-        h.id = h.textContent.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
-      }});
-      el.querySelectorAll('h3').forEach(h => {{
-        if (!h.id) h.id = h.textContent.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
-      }});
-
-      return syncIdx;
-    }}
-
-    // ── Extract executive summary lede ─────────────────────────────────────────
-    function extractLede(el) {{
-      const firstH2 = el.querySelector('h2');
-      if (!firstH2) return;
-      const toMove = [];
-      let node = el.firstChild;
-      while (node && node !== firstH2) {{ toMove.push(node); node = node.nextSibling; }}
-      if (!toMove.length) return;
-      const ledeDiv = document.createElement('div');
-      ledeDiv.className = 'brief-lede';
-      toMove.forEach(n => ledeDiv.appendChild(n));
-      el.insertBefore(ledeDiv, el.firstChild);
-      const divider = document.createElement('div');
-      divider.className = 'lede-divider';
-      el.insertBefore(divider, ledeDiv.nextSibling);
-    }}
-
-    // ── Sidebar nav ────────────────────────────────────────────────────────────
-    function buildNav() {{
-      const nav = document.getElementById('nav-links');
-      const briefH2s = document.querySelectorAll('#brief-content h2');
-      if (briefH2s.length) {{
-        const lbl = document.createElement('p');
-        lbl.className = 'nav-section'; lbl.textContent = 'Brief';
-        nav.appendChild(lbl);
-        briefH2s.forEach(h => {{
-          if (!h.id) return;
-          nav.appendChild(Object.assign(document.createElement('a'), {{
-            href: '#' + h.id, className: 'nav-link', textContent: h.textContent.trim(),
-          }}));
-        }});
-      }}
-      const projH = document.querySelectorAll('#project-content h2, #project-content h3');
-      if (projH.length) {{
-        const lbl = document.createElement('p');
-        lbl.className = 'nav-section'; lbl.textContent = 'Projects';
-        nav.appendChild(lbl);
-        projH.forEach(h => {{
-          if (!h.id) return;
-          nav.appendChild(Object.assign(document.createElement('a'), {{
-            href: '#' + h.id, className: 'nav-link', textContent: h.textContent.trim(),
-          }}));
-        }});
-      }}
-    }}
-
-    // ── My Notes ───────────────────────────────────────────────────────────────
-    function loadNotes() {{
-      if (!SYNC_PORT) return;
-      fetch(`http://127.0.0.1:${{SYNC_PORT}}/notes`)
-        .then(r => r.json())
-        .then(data => {{
-          const el = document.getElementById('notes-input');
-          if (el && data.notes) el.value = data.notes;
-        }}).catch(() => {{}});
-    }}
-
-    function saveNotes() {{
-      if (!SYNC_PORT) return;
-      const notes = document.getElementById('notes-input').value;
-      fetch(`http://127.0.0.1:${{SYNC_PORT}}/notes`, {{
-        method: 'POST',
-        headers: {{ 'Content-Type': 'application/json' }},
-        body: JSON.stringify({{ notes }}),
-      }})
-      .then(r => r.json().then(body => {{
-        if (r.ok) showSyncToast(true, 'Notes saved');
-        else showSyncToast(false, body.error || 'save failed');
-      }})).catch(err => showSyncToast(false, err.message));
-    }}
-
-    // ── Render ─────────────────────────────────────────────────────────────────
-    (function () {{
-      const briefEl = document.getElementById('brief-content');
-      briefEl.innerHTML = marked.parse(BRIEF_MD);
-      extractLede(briefEl);
-      let nextSyncIdx = processContent(briefEl, REPORT_KEY + '-brief', 0, true);
-      makeCollapsible(briefEl);
-      updateProgress();
-
-      if (PROJECT_MD.trim()) {{
-        const body = PROJECT_MD.replace(/^##[^\n]*\n/m, '');
-        const projEl = document.getElementById('project-content');
-        projEl.innerHTML = marked.parse(body);
-        processContent(projEl, REPORT_KEY + '-proj', nextSyncIdx, false);
-        makeCollapsible(projEl);
-        document.getElementById('project-card').classList.remove('hidden');
-      }}
-
-      buildNav();
-      setupActiveNav();
-      renderSparkline(SPARKLINE_DATA);
-      renderMeetingWidget();
-      loadNotes();
-      document.getElementById('notes-input').addEventListener('keydown', e => {{
-        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') saveNotes();
-      }});
-    }})();
+    const CONFIG = {{
+      BRIEF_MD:          `{summary_escaped}`,
+      PROJECT_MD:        `{project_escaped}`,
+      REPORT_KEY:        '{report_key}',
+      SYNC_PORT:         {sync_port},
+      SPARKLINE_DATA:    {sparkline_json},
+      NEXT_MEETING:      {next_meeting_json},
+      PREV_FINGERPRINTS: {prev_fp_json},
+    }};
+  </script>
+  <script>
+{js_text}
   </script>
 </body>
 </html>"""

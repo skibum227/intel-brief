@@ -1,8 +1,13 @@
+import logging
 import os
 import re
 import requests
 from datetime import datetime, timezone
 from requests.auth import HTTPBasicAuth
+
+from src.config import get_limit
+
+log = logging.getLogger("intel_brief")
 
 
 def _get_cloud_id(base_url: str) -> str:
@@ -14,16 +19,26 @@ def _get_cloud_id(base_url: str) -> str:
 def _strip_html(html: str, skip_first_table: bool = False) -> str:
     """Strip HTML tags, optionally removing the first table element first."""
     if skip_first_table:
-        # Remove the first <table>...</table> block (non-greedy, dotall)
         html = re.sub(r"<table[\s\S]*?</table>", "", html, count=1, flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", " ", html)
     return " ".join(text.split())
 
 
+# Pattern matching date-range week titles (e.g., "2026-04-20 through 2026-04-24")
+_WEEK_TITLE_RE = re.compile(r"\d{4}-\d{2}-\d{2}\s+(through|to|-)\s+\d{4}-\d{2}-\d{2}", re.IGNORECASE)
+# Pattern matching YYYYMM folder names
+_FOLDER_TITLE_RE = re.compile(r"^\d{6}$")
+
+
 def _most_recent_child(api_base: str, auth, parent_id: str, depth: int) -> dict | None:
     """Drill `depth` levels into the child hierarchy, always picking the
     most-recently-modified child at each level. Returns the target page dict
-    (with at minimum 'id' and 'title'), or None if any level is empty."""
+    (with at minimum 'id' and 'title'), or None if any level is empty.
+
+    At the final level (depth=0), prefers pages whose titles look like weekly
+    updates over archive folders, to avoid picking a folder that was incidentally
+    modified more recently.
+    """
     resp = requests.get(
         f"{api_base}/rest/api/content/{parent_id}/child/page",
         auth=auth,
@@ -36,11 +51,20 @@ def _most_recent_child(api_base: str, auth, parent_id: str, depth: int) -> dict 
         return None
 
     children.sort(key=lambda p: p.get("version", {}).get("when", ""), reverse=True)
-    top = children[0]
 
     if depth == 0:
+        # At the final level, prefer weekly update pages over archive folders
+        # if the most recent child looks like an archive folder
+        top = children[0]
+        title = top.get("title", "")
+        if _FOLDER_TITLE_RE.match(title):
+            # Look for a sibling that's an actual weekly page
+            for child in children:
+                if _WEEK_TITLE_RE.search(child.get("title", "")):
+                    return child
         return top
-    return _most_recent_child(api_base, auth, top["id"], depth - 1)
+
+    return _most_recent_child(api_base, auth, children[0]["id"], depth - 1)
 
 
 def fetch_team_project_updates(config: dict) -> list[dict]:
@@ -68,6 +92,7 @@ def fetch_team_project_updates(config: dict) -> list[dict]:
     cloud_id = _get_cloud_id(base_url)
     api_base = f"https://api.atlassian.com/ex/confluence/{cloud_id}/wiki"
     auth = HTTPBasicAuth(email, os.environ["CONFLUENCE_API_TOKEN"])
+    max_chars = get_limit(config, "confluence_project_chars")
 
     results = []
     for sc in space_configs:
@@ -92,7 +117,7 @@ def fetch_team_project_updates(config: dict) -> list[dict]:
             search_resp.raise_for_status()
             pages = search_resp.json().get("results", [])
             if not pages:
-                print(f"  [project-update] No 'Project Tracking' page found in space {space_key}")
+                log.warning(f"[Confluence] No 'Project Tracking' page found in space {space_key}")
                 continue
 
             parent_id = pages[0]["id"]
@@ -100,7 +125,7 @@ def fetch_team_project_updates(config: dict) -> list[dict]:
             # Drill down through intermediate folders to the most recent update page
             target = _most_recent_child(api_base, auth, parent_id, nesting_depth)
             if not target:
-                print(f"  [project-update] No pages found under 'Project Tracking' in {space_key}")
+                log.warning(f"[Confluence] No pages found under 'Project Tracking' in {space_key}")
                 continue
 
             page_id = target["id"]
@@ -118,7 +143,7 @@ def fetch_team_project_updates(config: dict) -> list[dict]:
 
             body_html = details.get("body", {}).get("view", {}).get("value", "")
             content = _strip_html(body_html, skip_first_table=skip_first_table)
-            content = content[:8000]
+            content = content[:max_chars]
 
             webui = details.get("_links", {}).get("webui", "")
             results.append({
@@ -130,7 +155,7 @@ def fetch_team_project_updates(config: dict) -> list[dict]:
             })
 
         except Exception as e:
-            print(f"  [project-update] Error fetching project updates for {space_key}: {e}")
+            log.warning(f"[Confluence] Error fetching project updates for {space_key}: {e}")
 
     return results
 
@@ -144,78 +169,154 @@ def fetch_updates(config: dict, since: datetime) -> list[dict]:
     auth = HTTPBasicAuth(email, os.environ["CONFLUENCE_API_TOKEN"])
 
     spaces = config.get("confluence", {}).get("spaces", [])
+    body_chars = get_limit(config, "confluence_body_chars")
     # Ensure since is timezone-aware for comparison
     if since.tzinfo is None:
         since = since.replace(tzinfo=timezone.utc)
+    since_iso = since.strftime("%Y-%m-%d %H:%M")
     updates = []
 
     for space_key in spaces:
         try:
+            # Use CQL via the /rest/api/content endpoint's search capability
+            cql = f'space="{space_key}" AND lastModified>="{since_iso}" AND type="page"'
             start = 0
             limit = 50
             while True:
                 resp = requests.get(
-                    f"{api_base}/rest/api/content",
+                    f"{api_base}/rest/api/search",
                     auth=auth,
                     params={
-                        "spaceKey": space_key,
-                        "type": "page",
-                        "expand": "version",
+                        "cql": cql,
                         "limit": limit,
                         "start": start,
                     },
                     timeout=30,
                 )
-                resp.raise_for_status()
+                if resp.status_code != 200:
+                    log.warning(
+                        f"[Confluence] CQL search returned {resp.status_code} for space {space_key}; "
+                        f"falling back to pagination"
+                    )
+                    updates.extend(_fetch_updates_paginated(
+                        api_base, auth, base_url, space_key, since, body_chars,
+                    ))
+                    break
+
                 data = resp.json()
                 results = data.get("results", [])
                 if not results:
                     break
 
-                found_any_recent = False
-                for page in results:
-                    updated_at = page.get("version", {}).get("when", "")
-                    if not updated_at:
-                        continue
-                    page_dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-                    if page_dt < since:
-                        continue
+                for result in results:
+                    content_obj = result.get("content", result)
+                    page_id = content_obj.get("id")
+                    updated_at = content_obj.get("version", {}).get("when", "")
+                    title = content_obj.get("title", "")
 
-                    found_any_recent = True
-                    page_id = page.get("id")
-
+                    # CQL search results may not include body — fetch it
                     detail_resp = requests.get(
                         f"{api_base}/rest/api/content/{page_id}",
                         auth=auth,
                         params={"expand": "body.view,version"},
                         timeout=30,
                     )
-                    detail_resp.raise_for_status()
+                    if detail_resp.status_code != 200:
+                        continue
                     details = detail_resp.json()
 
                     body_html = details.get("body", {}).get("view", {}).get("value", "")
                     clean_body = re.sub(r"<[^>]+>", " ", body_html)
-                    clean_body = " ".join(clean_body.split())[:1500]
+                    clean_body = " ".join(clean_body.split())[:body_chars]
 
                     webui = details.get("_links", {}).get("webui", "")
                     updates.append({
                         "source": "confluence",
                         "space": space_key,
-                        "title": details.get("title", ""),
+                        "title": title,
                         "author": details.get("version", {}).get("by", {}).get("displayName", ""),
                         "updated_at": updated_at,
                         "url": base_url + webui,
                         "content": clean_body,
                     })
 
-                # If we got a full page and found recent items, keep paginating
                 if len(results) < limit:
-                    break
-                if not found_any_recent:
                     break
                 start += limit
 
         except Exception as e:
-            print(f"[Confluence] Error fetching space {space_key}: {e}")
+            log.warning(f"[Confluence] Error fetching space {space_key}: {e}")
+
+    return updates
+
+
+def _fetch_updates_paginated(
+    api_base: str, auth, base_url: str,
+    space_key: str, since: datetime, body_chars: int,
+) -> list[dict]:
+    """Original pagination fallback for when CQL search is unavailable."""
+    updates = []
+    start = 0
+    limit = 50
+    while True:
+        resp = requests.get(
+            f"{api_base}/rest/api/content",
+            auth=auth,
+            params={
+                "spaceKey": space_key,
+                "type": "page",
+                "expand": "version",
+                "limit": limit,
+                "start": start,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        results = data.get("results", [])
+        if not results:
+            break
+
+        found_any_recent = False
+        for page in results:
+            updated_at = page.get("version", {}).get("when", "")
+            if not updated_at:
+                continue
+            page_dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+            if page_dt < since:
+                continue
+
+            found_any_recent = True
+            page_id = page.get("id")
+
+            detail_resp = requests.get(
+                f"{api_base}/rest/api/content/{page_id}",
+                auth=auth,
+                params={"expand": "body.view,version"},
+                timeout=30,
+            )
+            detail_resp.raise_for_status()
+            details = detail_resp.json()
+
+            body_html = details.get("body", {}).get("view", {}).get("value", "")
+            clean_body = re.sub(r"<[^>]+>", " ", body_html)
+            clean_body = " ".join(clean_body.split())[:body_chars]
+
+            webui = details.get("_links", {}).get("webui", "")
+            updates.append({
+                "source": "confluence",
+                "space": space_key,
+                "title": details.get("title", ""),
+                "author": details.get("version", {}).get("by", {}).get("displayName", ""),
+                "updated_at": updated_at,
+                "url": base_url + webui,
+                "content": clean_body,
+            })
+
+        if len(results) < limit:
+            break
+        if not found_any_recent:
+            break
+        start += limit
 
     return updates

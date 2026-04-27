@@ -12,7 +12,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-import yaml
+from src.config import load_config, get_vault_path
 
 
 def _highlight(text: str, query: str) -> str:
@@ -26,8 +26,8 @@ def main():
     args = parser.parse_args()
 
     query = " ".join(args.query)
-    config = yaml.safe_load(open(Path(__file__).parent / "config.yaml"))
-    vault_path = Path(config["obsidian_vault_path"]).expanduser()
+    config = load_config()
+    vault_path = get_vault_path(config)
     output_folder = config.get("obsidian_output_folder", "Intel Briefs")
     output_dir = vault_path / output_folder
 

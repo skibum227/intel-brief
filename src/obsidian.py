@@ -1,18 +1,27 @@
 import os
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
+
+from src.config import get_vault_path, get_output_dir
 
 _NOTES_PLACEHOLDER = "<!-- Add your notes here. They will be read into tomorrow's brief. -->"
 
 _CHECKBOX_SECTIONS = {"Project Pulse", "Priorities & Action Items", "Who Needs a Response"}
 
 
+def _fingerprint(text: str, word_count: int = 7) -> str:
+    """Normalize a checklist item to a comparable fingerprint."""
+    text = re.sub(r'[*_`\[\]]', '', text)
+    text = re.sub(r'https?://\S+', '', text)
+    text = re.sub(r'[^\x00-\x7F]', '', text)
+    text = re.sub(r'[^\w\s]', ' ', text).lower()
+    return ' '.join(text.split()[:word_count])
+
+
 def _iter_recent_briefs(config: dict, days: int):
-    """Yield (date_str, text) for brief files within the last `days` days."""
-    vault_path = Path(
-        os.path.expanduser(config.get("obsidian_vault_path", "~/Documents/ObsidianVault"))
-    )
-    output_dir = vault_path / config.get("obsidian_output_folder", "Intel Briefs")
+    """Yield (date_str, path, text) for brief files within the last `days` days."""
+    output_dir = get_output_dir(config)
     if not output_dir.exists():
         return
 
@@ -97,15 +106,7 @@ def load_daily_completion_counts(config: dict, days: int = 7) -> list[int]:
 
 def load_recurring_unchecked_items(config: dict, days: int = 5, min_appearances: int = 2) -> str:
     """Find unchecked action items that appear unresolved across multiple recent briefs."""
-    import re
     from collections import defaultdict
-
-    def _fingerprint(text: str) -> str:
-        text = re.sub(r'[*_`\[\]]', '', text)
-        text = re.sub(r'https?://\S+', '', text)
-        text = re.sub(r'[^\x00-\x7F]', '', text)
-        text = re.sub(r'[^\w\s]', ' ', text).lower()
-        return ' '.join(text.split()[:7])
 
     day_items: dict[str, list] = {}
     for date_str, _path, text in _iter_recent_briefs(config, days):
@@ -184,14 +185,6 @@ def extract_critical_team_signals(all_updates: dict) -> str:
 
 def load_prev_brief_fingerprints(config: dict) -> list[str]:
     """Return normalized fingerprints of the previous brief's action items for diff highlighting."""
-    import re
-
-    def _fp(text: str) -> str:
-        text = re.sub(r'[*_`\[\]]', '', text)
-        text = re.sub(r'[^\x00-\x7F]', '', text)
-        text = re.sub(r'[^\w\s]', ' ', text).lower()
-        return ' '.join(text.split()[:6])
-
     results = list(_iter_recent_briefs(config, days=2))
     if len(results) < 2:
         return []
@@ -205,7 +198,7 @@ def load_prev_brief_fingerprints(config: dict) -> list[str]:
             in_section = line[3:].strip() in _CHECKBOX_SECTIONS
         elif in_section and (line.startswith('- [ ]') or line.startswith('- [x]')):
             raw = line[5:].strip()
-            fp = _fp(raw)
+            fp = _fingerprint(raw, word_count=6)
             if len(fp) > 5:
                 fps.append(fp)
     return fps
@@ -293,9 +286,7 @@ def load_last_brief_for_html(config: dict) -> dict | None:
 
 
 def write_brief(summary: str, all_updates: dict, config: dict, project_update: str = "") -> Path:
-    vault_path = Path(
-        os.path.expanduser(config.get("obsidian_vault_path", "~/Documents/ObsidianVault"))
-    )
+    vault_path = get_vault_path(config)
     output_folder = config.get("obsidian_output_folder", "Intel Briefs")
 
     now = datetime.now()
@@ -332,4 +323,39 @@ sources: {list(all_updates.keys())}
 
     filepath.write_text(content, encoding="utf-8")
     print(f"\n  Brief written to: {filepath}")
+    return filepath
+
+
+def write_meeting_prep(prep_text: str, config: dict) -> Path:
+    """Write meeting prep notes to the Obsidian vault."""
+    vault_path = get_vault_path(config)
+    output_folder = config.get("obsidian_output_folder", "Intel Briefs")
+
+    now = datetime.now()
+    date_str = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H:%M")
+
+    output_dir = vault_path / output_folder / now.strftime("%Y%m")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    filepath = output_dir / (now.strftime("%d %H-%M") + " Meeting Prep.md")
+
+    # Strip any title heading the LLM may have added
+    prep_body = "\n".join(
+        line for i, line in enumerate(prep_text.splitlines())
+        if not (i == 0 and line.startswith("# "))
+    ).lstrip("\n")
+
+    content = f"""---
+date: {date_str}
+generated_at: {time_str}
+type: meeting-prep
+---
+
+# Meeting Prep — {date_str}
+
+{prep_body}
+"""
+
+    filepath.write_text(content, encoding="utf-8")
+    print(f"\n  Meeting prep written to: {filepath}")
     return filepath

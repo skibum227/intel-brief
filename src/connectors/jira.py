@@ -1,6 +1,11 @@
+import logging
 import os
 from datetime import datetime
 from atlassian import Jira
+
+from src.config import get_limit
+
+log = logging.getLogger("intel_brief")
 
 
 def fetch_updates(config: dict, since: datetime) -> list[dict]:
@@ -15,6 +20,7 @@ def fetch_updates(config: dict, since: datetime) -> list[dict]:
     since_str = since.strftime("%Y-%m-%d %H:%M")
     project_list = ", ".join(f'"{p}"' for p in projects)
     jql = f'project in ({project_list}) AND updated >= "{since_str}" ORDER BY updated DESC'
+    comment_depth = get_limit(config, "jira_comment_depth")
     updates = []
 
     try:
@@ -29,7 +35,6 @@ def fetch_updates(config: dict, since: datetime) -> list[dict]:
             assignee = fields.get("assignee")
             assignee_name = assignee.get("displayName", "Unassigned") if assignee else "Unassigned"
 
-            # Include last 3 comments for context
             comments = fields.get("comment", {}).get("comments", [])
             recent_comments = [
                 {
@@ -37,7 +42,7 @@ def fetch_updates(config: dict, since: datetime) -> list[dict]:
                     "body": c.get("body", "")[:500],
                     "updated": c.get("updated", c.get("created", "")),
                 }
-                for c in comments[-3:]
+                for c in comments[-comment_depth:]
             ]
 
             updates.append({

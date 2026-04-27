@@ -1,11 +1,12 @@
 import json
 import os
-import sys
 import time
 import random
 from collections import defaultdict
 
 import anthropic
+
+from src.config import get_limit, log
 
 SYSTEM_PROMPT = """You are a chief of staff and thought partner for JD (Jonathan), the Head of Data at a fintech startup.
 You support him across data science, data engineering, and strategic analytics teams.
@@ -41,7 +42,7 @@ Do not include a title or date heading — the document template provides that."
 
 USER_PROMPT = """Analyze the updates below from the past {lookback_hours} hours and produce a brief.
 
-{prior_context_block}{user_notes_block}{resolved_block}{recurring_block}{team_signals_block}Open with a 2–3 sentence executive summary (plain paragraph, no heading) naming the day's main theme and single most important action item.
+{prior_context_block}{user_notes_block}{resolved_block}{recurring_block}{team_signals_block}{dismissed_block}Open with a 2–3 sentence executive summary (plain paragraph, no heading) naming the day's main theme and single most important action item.
 
 Then format each of the first three sections as a checklist using `- [ ]` for each item.
 Omit any section that has nothing meaningful to report.
@@ -74,17 +75,21 @@ RAW DATA:
 def summarize(
     all_updates: dict,
     lookback_hours: float,
+    config: dict,
     prior_context: str = "",
     user_notes: str = "",
     completed_items: str = "",
     recurring_items: str = "",
     team_signals: str = "",
+    dismissed_items: list[str] | None = None,
 ) -> str:
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
+    max_bytes = get_limit(config, "raw_data_max_bytes")
     raw_data = json.dumps(all_updates, indent=2, default=str)
-    if len(raw_data) > 150_000:
-        raw_data = raw_data[:150_000] + "\n\n[... truncated due to volume ...]"
+    if len(raw_data) > max_bytes:
+        log.warning(f"Raw data truncated from {len(raw_data):,} to {max_bytes:,} chars")
+        raw_data = raw_data[:max_bytes] + "\n\n[... truncated due to volume ...]"
 
     if prior_context:
         prior_context_block = (
@@ -126,7 +131,16 @@ def summarize(
     else:
         team_signals_block = ""
 
-    stream_kwargs = dict(
+    if dismissed_items:
+        dismissed_block = (
+            "DISMISSED (user marked these as noise — de-prioritize or omit similar items):\n"
+            + "\n".join(f"- {fp}" for fp in dismissed_items)
+            + "\n\n---\n\n"
+        )
+    else:
+        dismissed_block = ""
+
+    create_kwargs = dict(
         model="claude-opus-4-6",
         max_tokens=4096,
         system=SYSTEM_PROMPT,
@@ -140,27 +154,112 @@ def summarize(
                     resolved_block=resolved_block,
                     recurring_block=recurring_block,
                     team_signals_block=team_signals_block,
+                    dismissed_block=dismissed_block,
                     raw_data=raw_data,
                 ),
             }
         ],
     )
 
-    print("\n")
     for attempt in range(5):
         try:
-            full_text = ""
-            with client.messages.stream(**stream_kwargs) as stream:
-                for text in stream.text_stream:
-                    sys.stdout.write(text)
-                    sys.stdout.flush()
-                    full_text += text
-            print("\n")
-            return full_text
+            message = client.messages.create(**create_kwargs)
+            return message.content[0].text
         except anthropic.APIStatusError as e:
             if e.status_code in (529, 503) and attempt < 4:
                 wait = (2 ** attempt) + random.uniform(0, 1)
-                print(f"\n[overloaded — retrying in {wait:.1f}s, attempt {attempt + 1}/5]")
+                log.warning(f"API overloaded — retrying in {wait:.1f}s (attempt {attempt + 1}/5)")
+                time.sleep(wait)
+            else:
+                raise
+
+
+_MEETING_PREP_SYSTEM = """You are preparing meeting prep notes for JD (Jonathan), the Head of Data at a fintech startup.
+
+For each upcoming meeting, generate prep notes that help JD walk in prepared. For each meeting:
+
+1. **Meeting context**: What is this meeting likely about? (infer from title, attendees, recent activity)
+2. **Attendee context**: For each non-trivial attendee, surface their recent activity:
+   - Slack messages or threads they've been active in
+   - Jira tickets they're assigned to or have commented on
+   - Emails they've sent/received
+   - Any relevant Confluence updates
+3. **Suggested talking points**: Based on the data, what should JD bring up or be prepared for?
+4. **Open items**: Any unresolved threads, blocked tickets, or pending decisions involving these people
+
+Skip meetings that are routine standup/scrum (unless there's specific context worth noting).
+Skip attendee context for large meetings (10+ attendees) — just note the meeting purpose.
+
+Output format:
+
+## Meeting Title — HH:MM AM/PM
+**Attendees**: Name1, Name2, ...
+
+### Context
+Brief description of what this meeting is likely about.
+
+### Attendee Activity
+- **Name**: Recent relevant activity from Slack/Jira/email...
+
+### Talking Points
+- Suggested topic 1
+- Suggested topic 2
+
+Be concise and actionable. Focus on what helps JD prepare, not exhaustive activity logs."""
+
+
+def generate_meeting_prep(
+    meetings: list[dict],
+    all_updates: dict,
+    config: dict,
+) -> str:
+    """Generate meeting prep notes by cross-referencing attendees with recent activity."""
+    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+
+    max_bytes = get_limit(config, "raw_data_max_bytes")
+
+    # Build per-meeting blocks with attendee info
+    meetings_block = ""
+    for event in meetings:
+        start = event.get("start", "")
+        title = event.get("title", "(No title)")
+        attendees = event.get("attendees", [])
+        desc = event.get("description", "")
+        organizer = event.get("organizer", "")
+
+        meetings_block += f"\n### {title}\n"
+        meetings_block += f"- **Time**: {start}\n"
+        meetings_block += f"- **Organizer**: {organizer}\n"
+        if attendees:
+            meetings_block += f"- **Attendees**: {', '.join(attendees)}\n"
+        if desc:
+            meetings_block += f"- **Description**: {desc[:300]}\n"
+
+    raw_signals = json.dumps(all_updates, indent=2, default=str)
+    if len(raw_signals) > max_bytes:
+        log.warning(f"Meeting prep signals truncated from {len(raw_signals):,} to {max_bytes:,} chars")
+        raw_signals = raw_signals[:max_bytes] + "\n\n[... truncated ...]"
+
+    user_content = (
+        f"UPCOMING MEETINGS:\n{meetings_block}\n\n---\n\n"
+        f"RECENT ACTIVITY (Slack, Jira, email, Confluence — use to build attendee context):\n{raw_signals}"
+    )
+
+    create_kwargs = dict(
+        model="claude-opus-4-6",
+        max_tokens=4096,
+        system=_MEETING_PREP_SYSTEM,
+        messages=[{"role": "user", "content": user_content}],
+    )
+
+    for attempt in range(5):
+        try:
+            message = client.messages.create(**create_kwargs)
+            return message.content[0].text
+        except anthropic.APIStatusError as e:
+            if e.status_code in (529, 503) and attempt < 4:
+                wait = (2 ** attempt) + random.uniform(0, 1)
+                log.warning(f"API overloaded — retrying in {wait:.1f}s (attempt {attempt + 1}/5)")
                 time.sleep(wait)
             else:
                 raise
@@ -199,6 +298,7 @@ def generate_project_update(
     projects: list[dict],
     weekly_updates: dict,
     prior_context: str,
+    config: dict,
     confluence_pages: list[dict] | None = None,
 ) -> str:
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
@@ -222,9 +322,11 @@ def generate_project_update(
             f"{page['content']}\n"
         )
 
+    max_bytes = get_limit(config, "project_update_max_bytes")
     raw_signals = json.dumps(weekly_updates, indent=2, default=str)
-    if len(raw_signals) > 100_000:
-        raw_signals = raw_signals[:100_000] + "\n\n[... truncated ...]"
+    if len(raw_signals) > max_bytes:
+        log.warning(f"Project update signals truncated from {len(raw_signals):,} to {max_bytes:,} chars")
+        raw_signals = raw_signals[:max_bytes] + "\n\n[... truncated ...]"
 
     prior_block = (
         f"PRIOR BRIEFS (last 7 days — continuity context only):\n{prior_context}\n\n---\n\n"
@@ -255,7 +357,7 @@ def generate_project_update(
         except anthropic.APIStatusError as e:
             if e.status_code in (529, 503) and attempt < 4:
                 wait = (2 ** attempt) + random.uniform(0, 1)
-                print(f"[overloaded — retrying in {wait:.1f}s, attempt {attempt + 1}/5]")
+                log.warning(f"API overloaded — retrying in {wait:.1f}s (attempt {attempt + 1}/5)")
                 time.sleep(wait)
             else:
                 raise

@@ -10,6 +10,9 @@ obsidian_output_folder: Intel Briefs
 lookback_hours: 24
 
 slack:
+  thread_reply_min: 3    # fetch replies for threads with this many+ replies
+  include_mentions: false  # requires search:read scope
+  include_dms: false       # requires im:read scope
   channels:
     - data-engineering
     - airflow_prod_alerts
@@ -65,6 +68,7 @@ jira:
     # Project keys
 
 github:
+  include_pr_body: true
   repos:
     - Perpay/perpay-airflow
 
@@ -93,6 +97,18 @@ gmail:
 
 google_cal:
   max_results: 20
+
+# Tunable limits — all have sensible defaults; override as needed
+limits:
+  jira_comment_depth: 3
+  gmail_snippet_chars: 300
+  confluence_body_chars: 1500
+  confluence_project_chars: 8000
+  raw_data_max_bytes: 150000
+  project_update_max_bytes: 100000
+  history_window_days: 3
+  recurring_window_days: 5
+  github_pr_body_chars: 500
 
 google_sheets:
   project_tracker:

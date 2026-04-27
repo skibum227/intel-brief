@@ -1,10 +1,13 @@
 """News connector — RSS regulatory feeds, NewsAPI, and SEC EDGAR 8-K filings."""
+import logging
 import os
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 import feedparser
 import requests
+
+log = logging.getLogger("intel_brief")
 
 
 _REGULATORY_FEEDS = [
@@ -54,7 +57,8 @@ def _fetch_rss(name: str, url: str, since: datetime) -> list[dict]:
                 "type": "regulatory",
             })
         return items
-    except Exception:
+    except Exception as e:
+        log.warning(f"[News] RSS fetch failed for {name}: {e}")
         return []
 
 
@@ -76,7 +80,8 @@ def _fetch_edgar(ticker: str, since: datetime) -> list[dict]:
                 "type": "sec_filing",
             })
         return items
-    except Exception:
+    except Exception as e:
+        log.warning(f"[News] EDGAR fetch failed for {ticker}: {e}")
         return []
 
 
@@ -110,7 +115,8 @@ def _fetch_newsapi(keywords: list[str], since: datetime) -> list[dict]:
                 "type": "news",
             })
         return items
-    except Exception:
+    except Exception as e:
+        log.warning(f"[News] NewsAPI fetch failed: {e}")
         return []
 
 

@@ -16,7 +16,7 @@ import argparse
 import shutil
 from pathlib import Path
 
-import yaml
+from src.config import load_config, get_vault_path
 
 
 def main():
@@ -24,8 +24,8 @@ def main():
     parser.add_argument("--execute", action="store_true", help="Actually move files (default is dry run)")
     args = parser.parse_args()
 
-    config = yaml.safe_load(open(Path(__file__).parent / "config.yaml"))
-    vault_path = Path(config["obsidian_vault_path"]).expanduser()
+    config = load_config()
+    vault_path = get_vault_path(config)
     output_folder = config.get("obsidian_output_folder", "Intel Briefs")
     output_dir = vault_path / output_folder
 
