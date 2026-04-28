@@ -110,7 +110,7 @@ def _fetch_thread_replies(
 
 def _fetch_mentions(
     client: WebClient, user_id: str, since: datetime,
-    users_cache: dict, seen_ts: set,
+    users_cache: dict, seen_ts: set, thread_reply_min: int = 3,
 ) -> list[dict]:
     """Fetch messages mentioning the authenticated user."""
     since_ts = str(since.timestamp())
@@ -135,15 +135,28 @@ def _fetch_mentions(
                 continue
 
             channel_info = match.get("channel", {})
+            channel_id = channel_info.get("id", "") if isinstance(channel_info, dict) else ""
             channel_name = channel_info.get("name", "unknown") if isinstance(channel_info, dict) else "unknown"
             author_id = match.get("user", match.get("username", ""))
+            reply_count = match.get("reply_count", 0)
+
+            # If the @mention itself sits inside a thread, fetch the thread context.
+            # Use thread_ts when present (mention is a reply); else ts (mention is the parent).
+            thread_replies = []
+            thread_anchor = match.get("thread_ts") or ts
+            if channel_id and (reply_count >= thread_reply_min or match.get("thread_ts")):
+                thread_replies = _fetch_thread_replies(
+                    client, channel_id, thread_anchor, users_cache,
+                )
+
             updates.append({
                 "source": "slack",
                 "channel": f"@mention (#{channel_name})",
                 "author": _get_username(client, author_id, users_cache) if author_id else "unknown",
                 "text": match.get("text", ""),
                 "timestamp": datetime.fromtimestamp(float(ts)).isoformat() if ts else "",
-                "thread_reply_count": 0,
+                "thread_reply_count": reply_count,
+                "thread_replies": thread_replies,
             })
     except SlackApiError as e:
         log.warning(f"[Slack] Error fetching mentions: {e}")
@@ -153,6 +166,7 @@ def _fetch_mentions(
 def _fetch_dms(
     client: WebClient, since: datetime,
     users_cache: dict, seen_ts: set, max_conversations: int = 20,
+    thread_reply_min: int = 3,
 ) -> list[dict]:
     """Fetch recent DM messages."""
     since_ts = str(since.timestamp())
@@ -188,13 +202,22 @@ def _fetch_dms(
                 if ts in seen_ts:
                     continue
                 user_id = msg.get("user", "")
+                reply_count = msg.get("reply_count", 0)
+
+                thread_replies = []
+                if reply_count >= thread_reply_min:
+                    thread_replies = _fetch_thread_replies(
+                        client, conv_id, ts, users_cache,
+                    )
+
                 updates.append({
                     "source": "slack",
                     "channel": dm_label,
                     "author": _get_username(client, user_id, users_cache) if user_id else "unknown",
                     "text": msg.get("text", ""),
                     "timestamp": datetime.fromtimestamp(float(ts)).isoformat() if ts else "",
-                    "thread_reply_count": msg.get("reply_count", 0),
+                    "thread_reply_count": reply_count,
+                    "thread_replies": thread_replies,
                 })
     except SlackApiError as e:
         log.warning(f"[Slack] Error fetching DMs: {e}")
@@ -271,6 +294,7 @@ def fetch_updates(config: dict, since: datetime) -> list[dict]:
             if own_id:
                 mention_updates = _fetch_mentions(
                     client, own_id, since, users_cache, seen_ts,
+                    thread_reply_min=thread_reply_min,
                 )
                 updates.extend(mention_updates)
         except Exception as e:
@@ -279,7 +303,10 @@ def fetch_updates(config: dict, since: datetime) -> list[dict]:
     # ── DMs ──────────────────────────────────────────────────────────────
     if include_dms:
         try:
-            dm_updates = _fetch_dms(client, since, users_cache, seen_ts)
+            dm_updates = _fetch_dms(
+                client, since, users_cache, seen_ts,
+                thread_reply_min=thread_reply_min,
+            )
             updates.extend(dm_updates)
         except Exception as e:
             log.warning(f"[Slack] Error in DM fetch: {e}")

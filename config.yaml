@@ -10,9 +10,9 @@ obsidian_output_folder: Intel Briefs
 lookback_hours: 24
 
 slack:
-  thread_reply_min: 3    # fetch replies for threads with this many+ replies
-  include_mentions: false  # requires search:read scope
-  include_dms: false       # requires im:read scope
+  thread_reply_min: 5    # fetch replies for threads with this many+ replies
+  include_mentions: read  # requires search:read scope
+  include_dms: true       # requires im:read scope
   channels:
     - data-engineering
     - airflow_prod_alerts
