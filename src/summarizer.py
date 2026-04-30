@@ -3,6 +3,7 @@ import os
 import time
 import random
 from collections import defaultdict
+from datetime import datetime, timezone
 
 import anthropic
 
@@ -18,6 +19,28 @@ not a third party. Do not refer to JD in the third person in the brief.
 Your job: analyze updates from Slack, Jira, Confluence, Calendar, and Email, then produce a concise,
 high-signal brief that helps JD manage his projects and team — not just review what happened, but
 think through what to do next.
+
+NAME ACCURACY (critical — readers see these names):
+- Use the exact name as it appears in the source data. Do not invent, abbreviate, translate, or
+  guess full names from a handle (e.g. do NOT expand "asmith" to "Alex Smith"). If only a handle
+  or first name is given, use that verbatim.
+- Never assign an action, message, or ticket to someone unless the source data explicitly attributes
+  it to them. If attribution is unclear, omit the name rather than guess.
+- If the same person appears under multiple identifiers (Slack handle, email, "displayName"), prefer
+  the human-readable display name actually present in the data; do not merge identities you are not
+  sure refer to the same person.
+- "JD" / "Jonathan" / "jdh385" all refer to the user. Never refer to the user in the third person.
+
+DATE ACCURACY (critical — readers act on these dates):
+- TODAY is {today_str} ({today_weekday}). Treat this as ground truth for all relative references
+  ("today", "yesterday", "this week", "tomorrow"). Compute days-of-week and dates from this anchor;
+  do NOT infer the date from training data or filenames.
+- The lookback window for raw data is the last {lookback_hours} hours ending now. Anything outside
+  that window is context only.
+- When a source includes a timestamp, quote dates in `YYYY-MM-DD` form (or weekday + date for
+  meetings) using the timestamp from the data. Do not paraphrase a date you cannot see in the data.
+- Never invent due dates, deadlines, or "by Friday"-style targets unless they are explicitly in the
+  source. If a deadline is implied but not stated, say "no stated deadline."
 
 Key behaviors:
 - If JD has written notes (corrections, context, observations), treat them as ground truth. They
@@ -85,6 +108,10 @@ def summarize(
 ) -> str:
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
+    now = datetime.now(timezone.utc).astimezone()
+    today_str = now.strftime("%Y-%m-%d")
+    today_weekday = now.strftime("%A")
+
     max_bytes = get_limit(config, "raw_data_max_bytes")
     raw_data = json.dumps(all_updates, indent=2, default=str)
     if len(raw_data) > max_bytes:
@@ -143,7 +170,11 @@ def summarize(
     create_kwargs = dict(
         model="claude-opus-4-6",
         max_tokens=4096,
-        system=SYSTEM_PROMPT,
+        system=SYSTEM_PROMPT.format(
+            today_str=today_str,
+            today_weekday=today_weekday,
+            lookback_hours=round(lookback_hours, 1),
+        ),
         messages=[
             {
                 "role": "user",
@@ -175,6 +206,20 @@ def summarize(
 
 
 _MEETING_PREP_SYSTEM = """You are preparing meeting prep notes for JD (Jonathan), the Head of Data at a fintech startup.
+
+TODAY is {today_str} ({today_weekday}). Use this as the anchor for all relative date language
+("today", "tomorrow", "later this week"). Do NOT infer the date from anywhere else.
+
+NAME ACCURACY (critical):
+- Use the exact attendee names provided in the meeting block. Do not abbreviate, expand, or guess
+  full names from email handles. If only an email is provided, use the local part as-is.
+- Only attribute Slack/Jira/email activity to an attendee when the source data clearly identifies
+  that same person (matching display name or email). When in doubt, omit rather than guess.
+
+DATE/TIME ACCURACY (critical):
+- The meeting time provided in each meeting block is authoritative — render it exactly as given,
+  including timezone if present. Do not round, shift, or reformat to a different timezone.
+- The meeting heading must use the actual scheduled time from the data, not an invented one.
 
 For each upcoming meeting, generate prep notes that help JD walk in prepared. For each meeting:
 
@@ -216,6 +261,10 @@ def generate_meeting_prep(
     """Generate meeting prep notes by cross-referencing attendees with recent activity."""
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
+    now = datetime.now(timezone.utc).astimezone()
+    today_str = now.strftime("%Y-%m-%d")
+    today_weekday = now.strftime("%A")
+
     max_bytes = get_limit(config, "raw_data_max_bytes")
 
     # Build per-meeting blocks with attendee info
@@ -248,7 +297,10 @@ def generate_meeting_prep(
     create_kwargs = dict(
         model="claude-opus-4-6",
         max_tokens=4096,
-        system=_MEETING_PREP_SYSTEM,
+        system=_MEETING_PREP_SYSTEM.format(
+            today_str=today_str,
+            today_weekday=today_weekday,
+        ),
         messages=[{"role": "user", "content": user_content}],
     )
 
@@ -267,6 +319,19 @@ def generate_meeting_prep(
 
 _PROJECT_UPDATE_SYSTEM = """You are drafting a Friday project status update for JD's weekly tracker.
 JD is the Head of Data at a fintech startup, overseeing Data Science, Data Engineering, and Analytics.
+
+TODAY is {today_str} ({today_weekday}). The reporting window is the 7 days ending today; "this week"
+in the output means that window. Do not infer the date from training data or filenames.
+
+NAME ACCURACY (critical):
+- Project names: copy them verbatim from the tracker sheet block. Do not rename, abbreviate, or
+  consolidate two projects into one even if they sound similar.
+- Person names: only attribute work to a person when the source data explicitly says so. Do not
+  expand handles into full names or guess owners from a project name.
+
+DATE ACCURACY (critical):
+- "Next steps: by [date]" must use a date that appears in the source data, or omit the date.
+- Do not invent target dates, sprint endings, or "by EOW" if the source doesn't state one.
 
 PRIMARY SOURCE — use the Confluence project update pages for each team. These contain the actual
 week's progress written by team members and are timestamped. Synthesize them into the status summary.
@@ -302,6 +367,10 @@ def generate_project_update(
     confluence_pages: list[dict] | None = None,
 ) -> str:
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+
+    now = datetime.now(timezone.utc).astimezone()
+    today_str = now.strftime("%Y-%m-%d")
+    today_weekday = now.strftime("%A")
 
     # Sheet data: last week's baseline, grouped by department
     by_dept: dict[str, list[dict]] = defaultdict(list)
@@ -346,7 +415,10 @@ def generate_project_update(
     create_kwargs = dict(
         model="claude-opus-4-6",
         max_tokens=2048,
-        system=_PROJECT_UPDATE_SYSTEM,
+        system=_PROJECT_UPDATE_SYSTEM.format(
+            today_str=today_str,
+            today_weekday=today_weekday,
+        ),
         messages=[{"role": "user", "content": user_content}],
     )
 
