@@ -284,6 +284,12 @@ def load_last_brief_for_html(config: dict) -> dict | None:
         if notes_marker in body:
             body = body.split(notes_marker)[0]
 
+        # Split off My ToDos section — rendered separately in the sidebar,
+        # so we don't want it duplicated inline in the main brief.
+        todos_marker = "\n## My ToDos"
+        if todos_marker in body:
+            body = body.split(todos_marker)[0]
+
         # Split project update from summary body
         project_update = ""
         proj_marker = "\n## Project Status Update"

@@ -177,15 +177,20 @@ def fetch_updates(config: dict, since: datetime) -> list[dict]:
 
     for space_key in spaces:
         try:
+            since_str = since.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M")
+            cql = (
+                f'space = "{space_key}" AND type = page '
+                f'AND lastmodified >= "{since_str}" '
+                f'ORDER BY lastmodified DESC'
+            )
             start = 0
             limit = 50
             while True:
                 resp = requests.get(
-                    f"{api_base}/rest/api/content",
+                    f"{api_base}/rest/api/content/search",
                     auth=auth,
                     params={
-                        "spaceKey": space_key,
-                        "type": "page",
+                        "cql": cql,
                         "expand": "version",
                         "limit": limit,
                         "start": start,
@@ -198,18 +203,9 @@ def fetch_updates(config: dict, since: datetime) -> list[dict]:
                 if not results:
                     break
 
-                found_any_recent = False
                 for page in results:
                     updated_at = page.get("version", {}).get("when", "")
-                    if not updated_at:
-                        continue
-                    page_dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-                    if page_dt < since:
-                        continue
-
-                    found_any_recent = True
                     page_id = page.get("id")
-
                     detail_resp = requests.get(
                         f"{api_base}/rest/api/content/{page_id}",
                         auth=auth,
@@ -235,8 +231,6 @@ def fetch_updates(config: dict, since: datetime) -> list[dict]:
                     })
 
                 if len(results) < limit:
-                    break
-                if not found_any_recent:
                     break
                 start += limit
 
